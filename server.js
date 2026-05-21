@@ -1211,11 +1211,14 @@ async function sendToMake(product) {
 
     if (response.ok && parsed) {
       const normalizedParsed = normalizeOptimization(parsed);
-      await createOptimizationRecord({
+      log.optimization_record = await createOptimizationRecord({
         listing: product,
         optimized: normalizedParsed,
         request_log_id: log.id
       });
+      log.optimized_title = normalizedParsed.seo_title || normalizedParsed.optimized_title || "";
+      log.optimized_description = normalizedParsed.description || normalizedParsed.optimized_description || "";
+      log.optimized_tags = normalizedParsed.tags || normalizedParsed.optimized_tags || [];
     }
 
     return log;
