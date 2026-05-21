@@ -567,7 +567,7 @@ async function syncEtsyListings() {
     const result = await parseJsonResponse(response);
     debugLog("etsy sync api response received", result);
     if (!response.ok || result?.success === false) {
-      const message = result.error === "etsy_reconnect_required" ? "Etsy token expired. Reconnect Etsy." : result.message || "Etsy sync failed.";
+      const message = result.message || result.error || "Etsy sync failed.";
       showToast(message, "error");
       setStatus("Failed");
       await refreshEtsyStatus();

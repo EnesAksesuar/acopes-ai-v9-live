@@ -788,7 +788,7 @@ async function etsyTokenStatus() {
 async function refreshEtsyToken(tokens) {
   if (!tokens.refresh_token) {
     const error = new Error("Etsy refresh token is missing.");
-    error.code = "token_refresh_failed";
+    error.code = "missing_refresh_token";
     error.reconnect_required = true;
     throw error;
   }
@@ -803,6 +803,15 @@ async function refreshEtsyToken(tokens) {
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
+    etsyDebug("Etsy token refresh debug", {
+      hasAccessToken: Boolean(tokens.access_token),
+      hasRefreshToken: Boolean(tokens.refresh_token),
+      expiresAt: tokens.expires_at || null,
+      isExpired: !etsyTokenUsable(tokens),
+      refreshAttempted: true,
+      refreshSuccess: false,
+      etsyStatusCode: response.status
+    });
     const error = new Error(payload.error_description || payload.error || "Etsy token refresh failed.");
     error.code = "token_refresh_failed";
     error.status = response.status;
@@ -821,6 +830,15 @@ async function refreshEtsyToken(tokens) {
     updated_at: new Date().toISOString()
   };
   await writeEtsyTokens(updated);
+  etsyDebug("Etsy token refresh debug", {
+    hasAccessToken: Boolean(updated.access_token),
+    hasRefreshToken: Boolean(updated.refresh_token),
+    expiresAt: updated.expires_at || null,
+    isExpired: !etsyTokenUsable(updated),
+    refreshAttempted: true,
+    refreshSuccess: true,
+    etsyStatusCode: response.status
+  });
   etsyDebug("Etsy token refreshed", { expires_at: updated.expires_at, scope: updated.scope });
   return updated;
 }
@@ -828,10 +846,31 @@ async function refreshEtsyToken(tokens) {
 async function ensureValidEtsyToken() {
   let tokens = await readEtsyTokens();
   if (!tokens.access_token) throw new Error("Etsy is not connected.");
-  if (!etsyTokenUsable(tokens)) tokens = await refreshEtsyToken(tokens);
+  const isExpired = !etsyTokenUsable(tokens);
+  if (isExpired) {
+    etsyDebug("Etsy token refresh debug", {
+      hasAccessToken: Boolean(tokens.access_token),
+      hasRefreshToken: Boolean(tokens.refresh_token),
+      expiresAt: tokens.expires_at || null,
+      isExpired,
+      refreshAttempted: Boolean(tokens.refresh_token),
+      refreshSuccess: false,
+      etsyStatusCode: null
+    });
+    tokens = await refreshEtsyToken(tokens);
+  }
   else if (tokens.last_refresh_status !== "active") {
     tokens = { ...tokens, last_refresh_status: "active" };
     await writeEtsyTokens(tokens);
+    etsyDebug("Etsy token refresh debug", {
+      hasAccessToken: Boolean(tokens.access_token),
+      hasRefreshToken: Boolean(tokens.refresh_token),
+      expiresAt: tokens.expires_at || null,
+      isExpired: false,
+      refreshAttempted: false,
+      refreshSuccess: false,
+      etsyStatusCode: null
+    });
   }
   return tokens;
 }
@@ -1267,10 +1306,11 @@ app.post("/api/etsy/sync", async (_req, res) => {
       etsy: await etsyTokenStatus()
     }, "Etsy listings synced"));
   } catch (error) {
-    const isRefreshFailure = error?.code === "token_refresh_failed";
+    const isRefreshFailure = error?.code === "token_refresh_failed" || error?.code === "missing_refresh_token";
     const status = isRefreshFailure || error?.status === 401 ? 401 : 502;
+    const errorCode = error?.code === "missing_refresh_token" ? "missing_refresh_token" : isRefreshFailure ? "token_refresh_failed" : status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed";
     res.status(status).json(errorResponse(
-      isRefreshFailure ? "token_refresh_failed" : status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed",
+      errorCode,
       error instanceof Error ? error.message : String(error),
       { etsy: { ...(await etsyTokenStatus()), reconnect_required: true, token_status: "reconnect_required" } }
     ));
