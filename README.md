@@ -451,12 +451,15 @@ Approved records are marked `awaiting_authenticated_etsy_executor` instead of be
 
 - Set environment variables:
   - `MAKE_WEBHOOK_URL`
+  - `MAKE_RESPONSE_SECRET`
   - `PORT`
   - `NODE_ENV=production`
 - Confirm `.env.example` is copied into the deploy environment with real values.
 - Confirm Vercel production env includes `MAKE_WEBHOOK_URL`.
+- Confirm Vercel production env includes `MAKE_RESPONSE_SECRET`.
 - Confirm live domain resolves: `https://acopesai.com`.
 - Verify Make.com callback points to the deployed HTTPS `/api/make-response` endpoint.
+- Verify Make.com sends `X-ACOPES-WEBHOOK-SECRET` with the same value as `MAKE_RESPONSE_SECRET`.
 - Verify Canva export responses include `thumbnail_preview_url`.
 - Verify landing CTAs route to `/app.html`.
 - Verify onboarding creates a remembered session cookie and grants `15` free credits.
@@ -481,6 +484,7 @@ Approved records are marked `awaiting_authenticated_etsy_executor` instead of be
 - Seed/demo data can still be read from the repository `data/` folder.
 - Persistent production storage should move to a database before paid launch because `/tmp` is ephemeral in serverless environments.
 - `/api/make-response` remains available as the Make callback route on Vercel.
+- `/api/make-response` requires `X-ACOPES-WEBHOOK-SECRET` when `MAKE_RESPONSE_SECRET` is set.
 
 ## Beta Goal
 

@@ -12,6 +12,7 @@ const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_
 const runtimeDataDir = path.join(process.env.ACOPES_DATA_DIR || "/tmp", "acopes-ai");
 const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
+const MAKE_RESPONSE_SECRET = (process.env.MAKE_RESPONSE_SECRET || "").trim();
 const logsPath = path.join(runtimeDataDir, "automation-logs.json");
 const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
 const listingsSeedPath = path.join(seedDataDir, "listings.json");
@@ -63,6 +64,13 @@ async function loadDotEnv(filePath) {
 
 app.use("/api/make-response", express.text({ type: "*/*", limit: "2mb" }));
 app.use(express.json());
+app.use((_req, res, next) => {
+  res.setHeader("X-Content-Type-Options", "nosniff");
+  res.setHeader("X-Frame-Options", "DENY");
+  res.setHeader("Referrer-Policy", "strict-origin-when-cross-origin");
+  res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
+  next();
+});
 app.use(express.static(path.join(__dirname, "public")));
 app.use(async (req, res, next) => {
   const cookies = Object.fromEntries(
@@ -371,6 +379,11 @@ function successResponse(data = {}, message = "ok") {
 function errorResponse(error, message = error, data = {}, retryable = true) {
   const envelope = { success: false, message, data, error, timestamp: new Date().toISOString(), request_id: crypto.randomUUID(), retryable };
   return data && typeof data === "object" && !Array.isArray(data) ? { ...envelope, ...data } : envelope;
+}
+
+function isAuthorizedMakeResponse(req) {
+  if (!MAKE_RESPONSE_SECRET) return process.env.NODE_ENV !== "production";
+  return String(req.get("X-ACOPES-WEBHOOK-SECRET") || "").trim() === MAKE_RESPONSE_SECRET;
 }
 
 function buildPayload(product) {
@@ -1444,6 +1457,10 @@ app.post("/api/retry/:id", async (req, res) => {
 });
 
 app.post("/api/make-response", async (req, res) => {
+  if (!isAuthorizedMakeResponse(req)) {
+    res.status(401).json({ success: false, error: "unauthorized_webhook" });
+    return;
+  }
   const parsed = parseMakeResponseBody(req.body);
   if (!parsed.ok) {
     res.status(400).json(errorResponse("invalid_json", "Invalid JSON."));
@@ -1509,6 +1526,10 @@ app.post("/api/make-response", async (req, res) => {
 });
 
 app.post("/api/test-make-response", async (_req, res) => {
+  if (process.env.NODE_ENV === "production") {
+    res.status(404).json(errorResponse("disabled_in_production", "Disabled in production."));
+    return;
+  }
   const listings = await readListingsCache();
   const listing = listings.find((item) => item.listing_id === "4362680734") || listings.find((item) => item.details_status === "synced");
   if (!listing) {
