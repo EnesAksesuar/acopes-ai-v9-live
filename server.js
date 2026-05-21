@@ -30,7 +30,6 @@ const waitlistPath = path.join(runtimeDataDir, "waitlist.json");
 const analyticsPath = path.join(runtimeDataDir, "analytics.json");
 const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
 const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
-const shopUrl = "https://www.etsy.com/shop/EDELLUXE";
 const ETSY_API_KEY = (process.env.ETSY_API_KEY || "").trim();
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || ETSY_API_KEY || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
@@ -39,8 +38,8 @@ const ETSY_AUTH_URL = "https://www.etsy.com/oauth/connect";
 const ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token";
 const ETSY_API_BASE = "https://api.etsy.com/v3/application";
 const ETSY_API_FALLBACK_BASE = "https://openapi.etsy.com/v3/application";
-const FALLBACK_SHOP_NAME = (process.env.ETSY_SHOP_NAME || shopUrl.split("/shop/")[1] || "").trim();
-const FALLBACK_SHOP_URL = (process.env.ETSY_SHOP_URL || shopUrl).trim();
+const FALLBACK_SHOP_NAME = (process.env.ETSY_SHOP_NAME || "EDELLUXE").trim();
+const FALLBACK_SHOP_URL = (process.env.ETSY_SHOP_URL || "").trim();
 const ETSY_ACCESS_TOKEN_ENV = (process.env.ETSY_ACCESS_TOKEN || "").trim();
 const ETSY_REFRESH_TOKEN_ENV = (process.env.ETSY_REFRESH_TOKEN || "").trim();
 const ETSY_TOKEN_EXPIRES_AT_ENV = (process.env.ETSY_TOKEN_EXPIRES_AT || "").trim();
@@ -959,10 +958,9 @@ function userIdFromToken(tokens = {}) {
   return /^\d+$/.test(tokenPrefix) ? tokenPrefix : "";
 }
 
-function shopUrlFromShop(shop = {}) {
+function urlFromShop(shop = {}) {
   if (shop.url) return shop.url;
   if (shop.shop_url) return shop.shop_url;
-  if (shop.shop_name) return `https://www.etsy.com/shop/${encodeURIComponent(shop.shop_name)}`;
   return "";
 }
 
@@ -972,39 +970,6 @@ function selectActiveShop(shops = []) {
     if (shop.is_open === false || shop.is_closed === true) return false;
     return !["closed", "inactive", "deleted"].includes(state);
   }) || shops[0] || null;
-}
-
-async function fallbackShopFromPublicStore(tokens = {}) {
-  const fallback = {
-    ...tokens,
-    shop_name: tokens.shop_name || FALLBACK_SHOP_NAME,
-    shop_url: tokens.shop_url || FALLBACK_SHOP_URL,
-    updated_at: new Date().toISOString()
-  };
-  if (!fallback.shop_id) {
-    const cachedListings = await readListingsCache();
-    const imageShopId = cachedListings
-      .map((listing) => String(listing.image_url || "").match(/i\.etsystatic\.com\/(\d+)/)?.[1])
-      .find(Boolean);
-    if (imageShopId) fallback.shop_id = imageShopId;
-  }
-  if (!fallback.shop_id) {
-    try {
-      const html = await fetchText(FALLBACK_SHOP_URL);
-      const shopIdMatch = html.match(/"shop_id"\s*:\s*(\d+)/) || html.match(/shop_id=(\d+)/);
-      if (shopIdMatch) fallback.shop_id = shopIdMatch[1];
-    } catch (error) {
-      etsyDebug("Public shop fallback skipped", { error: error instanceof Error ? error.message : String(error) });
-    }
-  }
-  if (fallback.shop_name || fallback.shop_id) {
-    await writeEtsyTokens(fallback);
-    etsyDebug("Shop fallback resolved", {
-      shop_id: fallback.shop_id || "",
-      shop_name: fallback.shop_name || ""
-    });
-  }
-  return fallback;
 }
 
 async function discoverEtsyShop(tokens) {
@@ -1026,17 +991,13 @@ async function discoverEtsyShop(tokens) {
     etsyDebug("User shops fetch failed", { user_id: userId, error: error instanceof Error ? error.message : String(error) });
   }
   const shop = selectActiveShop(shops);
-  if (!shop?.shop_id) {
-    const fallback = await fallbackShopFromPublicStore({ ...tokens, user_id: userId });
-    if (fallback.shop_id || fallback.shop_name) return fallback;
-  }
   if (!shop?.shop_id) throw new Error("No Etsy shop found for this account.");
   const updated = {
     ...tokens,
     user_id: userId,
     shop_id: String(shop.shop_id),
     shop_name: shop.shop_name || shop.title || "",
-    shop_url: shopUrlFromShop(shop),
+    shop_url: urlFromShop(shop),
     updated_at: new Date().toISOString()
   };
   await writeEtsyTokens(updated);
@@ -1071,66 +1032,6 @@ async function syncEtsyListings() {
     count: listings.length
   });
   return listings;
-}
-
-async function fetchText(url) {
-  const response = await fetch(url, {
-    headers: {
-      "User-Agent": "Mozilla/5.0 ACOPESAIOptimizationPlatform/1.0"
-    }
-  });
-  if (!response.ok) {
-    throw new Error(`Request failed for ${url}: ${response.status}`);
-  }
-  return response.text();
-}
-
-async function fetchActiveListings() {
-  const shopPages = await Promise.all([
-    fetchText(`${shopUrl}?page=1&sort_order=date_desc`),
-    fetchText(`${shopUrl}?page=2&sort_order=date_desc`)
-  ]);
-  const links = [...new Map(shopPages.flatMap(extractListingLinks).map((item) => [item.listing_id, item])).values()];
-
-  const listings = [];
-  for (const item of links) {
-    try {
-      const html = await fetchText(item.url);
-      const product = extractJsonLd(html);
-      const title = decodeHtml(product?.name || "");
-      const description = stripTags(product?.description || "");
-      const image = Array.isArray(product?.image) ? product.image[0] : product?.image || "";
-      const tags = extractTags(html);
-      listings.push({
-        name: title.split(",")[0] || title,
-        type: inferType(title),
-        style: inferStyle(title, tags),
-        title,
-        description,
-        tags,
-        image_url: image,
-        listing_id: item.listing_id,
-        source_url: item.url,
-        optimization_focus: "Hero thumbnail generation and Etsy CTR optimization"
-      });
-    } catch (error) {
-      listings.push({
-        name: `Listing ${item.listing_id}`,
-        type: "necklace",
-        style: "minimalist jewelry",
-        title: "",
-        description: "",
-        tags: [],
-        image_url: "",
-        listing_id: item.listing_id,
-        source_url: item.url,
-        optimization_focus: "Hero thumbnail generation and Etsy CTR optimization",
-        sync_error: error instanceof Error ? error.message : String(error)
-      });
-    }
-  }
-
-  return listings.filter((listing) => listing.title);
 }
 
 async function sendToMake(product) {
@@ -1445,41 +1346,29 @@ app.get("/api/queue", async (_req, res) => {
 
 app.get("/api/listings", async (_req, res) => {
   try {
-    const etsy = await etsyTokenStatus();
-    if (etsy.configured && etsy.connected && !etsy.expired) {
-      const listings = await syncEtsyListings();
-      res.json(successResponse({
-        status: "completed",
-        source: "etsy_api",
-        etsy: await etsyTokenStatus(),
-        listings
-      }, "Etsy listings synced"));
-      return;
-    }
-
-    const cached = await readListingsCache();
-    if (cached.length) {
-      console.log("Using demo fallback", { reason: "etsy_not_connected_or_expired", count: cached.length });
-      res.json(successResponse({
-        status: "completed",
-        source: cached.some((listing) => listing.sync_source === "etsy_api") ? "etsy_api_cache" : "authenticated_cache",
-        etsy,
-        listings: cached
-      }, "Listings loaded"));
-      return;
-    }
-
-    console.log("Using demo fallback", { reason: "public_shop_fetch" });
-    const publicListings = await fetchActiveListings();
-    await writeListingsCache(publicListings, { source: "public_shop_fetch" });
+    const tokens = await discoverEtsyShop(await ensureValidEtsyToken());
+    const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens);
+    const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
+      ...listing,
+      sync_source: "etsy_api",
+      details_status: "synced"
+    })).filter((listing) => listing.listing_id && listing.title);
+    console.log("Etsy API listing count", { count: listings.length });
+    await writeListingsCache(listings, {
+      source: "etsy_api",
+      shop_id: tokens.shop_id,
+      shop_name: tokens.shop_name,
+      shop_url: tokens.shop_url
+    });
     res.json(successResponse({
       status: "completed",
-      source: "public_shop_fetch",
-      etsy,
-      listings: publicListings
-    }, "Listings loaded"));
+      source: "etsy_api",
+      etsy: await etsyTokenStatus(),
+      listings
+    }, "Etsy listings synced"));
   } catch (error) {
-    res.status(502).json(errorResponse("listings_failed", error instanceof Error ? error.message : String(error), {
+    const status = error?.status === 401 ? 401 : 502;
+    res.status(status).json(errorResponse(status === 401 ? "etsy_auth_required" : "listings_failed", error instanceof Error ? error.message : String(error), {
       status: "failed",
       error: error instanceof Error ? error.message : String(error)
     }));
