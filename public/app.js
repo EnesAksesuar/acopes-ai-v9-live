@@ -6,6 +6,7 @@ let currentSession = null;
 let dashboardInitialized = false;
 const selectedListingIds = new Set();
 const DEBUG_MODE = true;
+const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 
 const productsEl = document.querySelector("#products");
 const logsEl = document.querySelector("#logs");
@@ -615,6 +616,11 @@ async function parseJsonResponse(response) {
 }
 
 function showUpgradeModal(plan = "") {
+  if (IS_DEV_HOST || currentSession?.dev_mode) {
+    if (upgradeModalEl) upgradeModalEl.hidden = true;
+    showToast("Development mode: unlimited optimization tests enabled.", "success");
+    return;
+  }
   upgradeModalEl.hidden = false;
   upgradeModalEl.dataset.selectedPlan = plan;
 }
@@ -646,7 +652,8 @@ function renderSession(session) {
     ${lockedFeatures}
   `;
   onboardingPanelEl.hidden = session.onboarding_completed && !session.email_required;
-  if (session.limit_reached) upgradeModalEl.hidden = false;
+  if (session.dev_mode || IS_DEV_HOST) upgradeModalEl.hidden = true;
+  else if (session.limit_reached) upgradeModalEl.hidden = false;
   renderTopKpis(optimizationRecords);
 }
 
@@ -1279,7 +1286,7 @@ logsEl?.addEventListener("click", async (event) => {
   const result = await response.json();
   if (response.status === 401 || response.status === 402) {
     renderSession(result.session);
-    upgradeModalEl.hidden = response.status !== 401 ? false : true;
+    upgradeModalEl.hidden = response.status === 401 || IS_DEV_HOST || result.session?.dev_mode ? true : false;
     setStatus("Failed");
     return;
   }

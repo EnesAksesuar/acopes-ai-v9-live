@@ -328,6 +328,30 @@ async function updateUser(userId, patch) {
   return user;
 }
 
+function isDevelopmentBypass(req = null) {
+  const host = String(req?.headers?.host || "");
+  const origin = String(req?.headers?.origin || "");
+  return (
+    process.env.DEV_MODE === "true" ||
+    process.env.NODE_ENV !== "production" ||
+    /(^|\/\/|:)localhost(?::|\/|$)/i.test(origin) ||
+    /(^|\/\/|:)127\.0\.0\.1(?::|\/|$)/i.test(origin) ||
+    /^localhost(?::|$)/i.test(host) ||
+    /^127\.0\.0\.1(?::|$)/i.test(host)
+  );
+}
+
+function devCreditUser(user = null) {
+  if (!user) return user;
+  return {
+    ...user,
+    plan: user.plan || "free",
+    credits_remaining: 9999,
+    credits_granted: 9999,
+    limit_reached: false
+  };
+}
+
 async function consumeCredits(user, amount) {
   if (!user || user.credits_remaining < amount) return null;
   return updateUser(user.id, {
@@ -1216,27 +1240,30 @@ async function sendToMake(product) {
   }
 }
 
-function sessionSummary(session, user = null) {
-  const creditsRemaining = user ? user.credits_remaining : 0;
-  const optimizationsUsed = user ? user.optimizations_used || 0 : session.optimizations_used || 0;
-  const plan = user ? user.plan : "free";
-  const freeLimit = user ? user.credits_granted || PLAN_CREDITS.free : FREE_OPTIMIZATION_LIMIT;
+function sessionSummary(session, user = null, options = {}) {
+  const devMode = Boolean(options.dev_mode);
+  const summaryUser = devMode ? devCreditUser(user) : user;
+  const creditsRemaining = summaryUser ? summaryUser.credits_remaining : devMode ? 9999 : 0;
+  const optimizationsUsed = summaryUser ? summaryUser.optimizations_used || 0 : session.optimizations_used || 0;
+  const plan = summaryUser ? summaryUser.plan : "free";
+  const freeLimit = summaryUser ? summaryUser.credits_granted || PLAN_CREDITS.free : devMode ? 9999 : FREE_OPTIMIZATION_LIMIT;
 
   return {
     id: session.id,
-    user_id: user?.id || "",
+    user_id: summaryUser?.id || "",
     free_limit: freeLimit,
     optimizations_used: optimizationsUsed,
     free_remaining: creditsRemaining,
     credits_remaining: creditsRemaining,
-    credits_granted: user?.credits_granted || 0,
+    credits_granted: summaryUser?.credits_granted || (devMode ? 9999 : 0),
     current_plan: plan,
     plan,
-    limit_reached: Boolean(user) && creditsRemaining <= 0,
-    email_required: !user,
+    limit_reached: devMode ? false : Boolean(summaryUser) && creditsRemaining <= 0,
+    email_required: !summaryUser,
+    dev_mode: devMode,
     onboarding_completed: session.onboarding_completed,
     store_name: session.store_name,
-    email: user?.email || session.email || ""
+    email: summaryUser?.email || session.email || ""
   };
 }
 
@@ -1245,7 +1272,7 @@ app.get("/api/logs", async (_req, res) => {
 });
 
 app.get("/api/session", async (req, res) => {
-  res.json(successResponse(sessionSummary(req.session, await getSessionUser(req.session)), "Session loaded"));
+  res.json(successResponse(sessionSummary(req.session, await getSessionUser(req.session), { dev_mode: isDevelopmentBypass(req) }), "Session loaded"));
 });
 
 app.get("/api/etsy/status", async (req, res) => {
@@ -1437,7 +1464,7 @@ app.post("/api/onboarding", async (req, res) => {
     email,
     user_id: user.id
   });
-  res.json(successResponse(sessionSummary(session, user), "Onboarding completed"));
+  res.json(successResponse(sessionSummary(session, user, { dev_mode: isDevelopmentBypass(req) }), "Onboarding completed"));
 });
 
 app.get("/api/analytics", async (_req, res) => {
@@ -1525,11 +1552,12 @@ app.get("/api/listings", async (req, res) => {
 
 app.post("/api/send", async (req, res) => {
   const user = await getSessionUser(req.session);
+  const devMode = isDevelopmentBypass(req);
   if (!user) {
-    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session) }));
+    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
   }
-  if (user.credits_remaining < 1) {
+  if (!devMode && user.credits_remaining < 1) {
     res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
     return;
   }
@@ -1537,31 +1565,32 @@ app.post("/api/send", async (req, res) => {
     res.status(503).json(errorResponse("make_webhook_not_configured", "Make webhook is not configured.", {
       error: "make_webhook_not_configured",
       message: "Make webhook is not configured.",
-      session: sessionSummary(req.session, user)
+      session: sessionSummary(req.session, user, { dev_mode: devMode })
     }));
     return;
   }
   await incrementAnalytics("optimization_started");
   const log = await sendToMake(req.body.product);
-  const updatedUser = log.status === "completed" ? await consumeCredits(user, 1) : user;
+  const updatedUser = !devMode && log.status === "completed" ? await consumeCredits(user, 1) : user;
   res.status(log.status === "completed" ? 200 : 502).json((log.status === "completed" ? successResponse : errorResponse)(
     log.status === "completed" ? {
     ...log,
-    session: sessionSummary(req.session, updatedUser)
+    session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
     } : "make_request_failed",
     log.status === "completed" ? "Optimization queued" : "Optimization request failed.",
-    log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser) }
+    log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser, { dev_mode: devMode }) }
   ));
 });
 
 app.post("/api/send-batch", async (req, res) => {
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);
+  const devMode = isDevelopmentBypass(req);
   if (!user) {
-    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session) }));
+    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
   }
-  if (user.credits_remaining < products.length) {
+  if (!devMode && user.credits_remaining < products.length) {
     res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
     return;
   }
@@ -1569,7 +1598,7 @@ app.post("/api/send-batch", async (req, res) => {
     res.status(503).json(errorResponse("make_webhook_not_configured", "Make webhook is not configured.", {
       error: "make_webhook_not_configured",
       message: "Make webhook is not configured.",
-      session: sessionSummary(req.session, user)
+      session: sessionSummary(req.session, user, { dev_mode: devMode })
     }));
     return;
   }
@@ -1579,21 +1608,22 @@ app.post("/api/send-batch", async (req, res) => {
     results.push(await sendToMake(product));
   }
   const completedCount = results.filter((item) => item.status === "completed").length;
-  const updatedUser = completedCount > 0 ? await consumeCredits(user, completedCount) : user;
+  const updatedUser = !devMode && completedCount > 0 ? await consumeCredits(user, completedCount) : user;
   res.json(successResponse({
     status: results.every((item) => item.status === "completed") ? "completed" : "partial",
     results,
-    session: sessionSummary(req.session, updatedUser)
+    session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
   }, "Batch processed"));
 });
 
 app.post("/api/retry/:id", async (req, res) => {
   const user = await getSessionUser(req.session);
+  const devMode = isDevelopmentBypass(req);
   if (!user) {
-    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session) }));
+    res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
   }
-  if (user.credits_remaining < 1) {
+  if (!devMode && user.credits_remaining < 1) {
     res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
     return;
   }
@@ -1601,7 +1631,7 @@ app.post("/api/retry/:id", async (req, res) => {
     res.status(503).json(errorResponse("make_webhook_not_configured", "Make webhook is not configured.", {
       error: "make_webhook_not_configured",
       message: "Make webhook is not configured.",
-      session: sessionSummary(req.session, user)
+      session: sessionSummary(req.session, user, { dev_mode: devMode })
     }));
     return;
   }
@@ -1625,14 +1655,14 @@ app.post("/api/retry/:id", async (req, res) => {
   };
 
   const log = await sendToMake(product);
-  const updatedUser = log.status === "completed" ? await consumeCredits(user, 1) : user;
+  const updatedUser = !devMode && log.status === "completed" ? await consumeCredits(user, 1) : user;
   res.status(log.status === "completed" ? 200 : 502).json((log.status === "completed" ? successResponse : errorResponse)(
     log.status === "completed" ? {
     ...log,
-    session: sessionSummary(req.session, updatedUser)
+    session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
     } : "make_request_failed",
     log.status === "completed" ? "Retry queued" : "Retry failed.",
-    log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser) }
+    log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser, { dev_mode: devMode }) }
   ));
 });
 
