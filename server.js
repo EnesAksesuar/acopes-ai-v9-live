@@ -31,7 +31,8 @@ const analyticsPath = path.join(runtimeDataDir, "analytics.json");
 const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
 const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
 const shopUrl = "https://www.etsy.com/shop/EDELLUXE";
-const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || process.env.ETSY_API_KEY || "").trim();
+const ETSY_API_KEY = (process.env.ETSY_API_KEY || "").trim();
+const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || ETSY_API_KEY || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
 const ETSY_SCOPES = (process.env.ETSY_SCOPES || "listings_r shops_r").trim();
 const ETSY_AUTH_URL = "https://www.etsy.com/oauth/connect";
@@ -930,7 +931,7 @@ async function etsyApi(pathname, tokens) {
       const response = await fetch(`${baseUrl}${pathname}`, {
         headers: {
           "Authorization": `Bearer ${tokens.access_token}`,
-          "x-api-key": ETSY_CLIENT_ID
+          "x-api-key": ETSY_API_KEY
         }
       });
       const payload = await response.json().catch(() => ({}));
