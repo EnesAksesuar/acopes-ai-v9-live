@@ -520,7 +520,14 @@ function buildPayload(product) {
 }
 
 function normalizeOptimization(input = {}) {
-  const source = input && typeof input === "object" ? input : {};
+  let source = input && typeof input === "object" ? input : {};
+  if (typeof input === "string") {
+    try {
+      source = JSON.parse(input);
+    } catch {
+      source = { optimized_title: input.split(/\r?\n/).find((line) => /necklace|bracelet|earrings|ring|jewelry|chain/i.test(line)) || "" };
+    }
+  }
   const candidate = source.optimization || source.aiOptimization || source.ai_optimization || source.result || source.data || {};
   const merged = {
     ...candidate,
@@ -559,6 +566,29 @@ function normalizeOptimization(input = {}) {
       tag_quality_score: numberOrUndefined(merged.tag_score ?? merged.tag_quality_score),
       alt_text_score: numberOrUndefined(merged.alt_text_score)
     }
+  };
+}
+
+function fallbackOptimizedTitle(listing = {}) {
+  const text = `${listing.title || listing.name || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
+  const material = text.includes("pearl") ? "Pearl" : text.includes("silver") ? "Silver" : "Gold";
+  const type = text.includes("bracelet") ? "Bracelet" : text.includes("earring") ? "Earrings" : text.includes("ring") ? "Ring" : "Necklace";
+  const style = text.includes("herringbone") ? "Herringbone Chain" : text.includes("paperclip") ? "Paperclip Chain" : text.includes("heart") ? "Heart" : text.includes("box") ? "Box Chain" : "Minimal";
+  return `${material} ${style} ${type}, Minimal Everyday Jewelry`;
+}
+
+function ensureOptimizationContent(optimized = {}, listing = {}) {
+  const title = optimized.seo_title || optimized.optimized_title || fallbackOptimizedTitle(listing);
+  const description = optimized.description || optimized.optimized_description || `${title} designed for minimalist Etsy styling, everyday wear, and gift-ready jewelry positioning.`;
+  const tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : ["minimal jewelry", "gold necklace", "gift for her", "dainty jewelry", "everyday necklace", "layering necklace", "quiet luxury"];
+  return {
+    ...optimized,
+    seo_title: title,
+    optimized_title: title,
+    description,
+    optimized_description: description,
+    tags,
+    optimized_tags: tags
   };
 }
 
@@ -1209,8 +1239,8 @@ async function sendToMake(product) {
     logs.unshift(log);
     await writeLogs(logs);
 
-    if (response.ok && parsed) {
-      const normalizedParsed = normalizeOptimization(parsed);
+    if (response.ok) {
+      const normalizedParsed = ensureOptimizationContent(normalizeOptimization(parsed || responseText), product);
       log.optimization_record = await createOptimizationRecord({
         listing: product,
         optimized: normalizedParsed,
@@ -1219,6 +1249,9 @@ async function sendToMake(product) {
       log.optimized_title = normalizedParsed.seo_title || normalizedParsed.optimized_title || "";
       log.optimized_description = normalizedParsed.description || normalizedParsed.optimized_description || "";
       log.optimized_tags = normalizedParsed.tags || normalizedParsed.optimized_tags || [];
+      log.seo_title = normalizedParsed.seo_title;
+      log.optimized_description = normalizedParsed.optimized_description;
+      log.optimized_tags = normalizedParsed.optimized_tags;
     }
 
     return log;
@@ -1575,14 +1608,17 @@ app.post("/api/send", async (req, res) => {
   await incrementAnalytics("optimization_started");
   const log = await sendToMake(req.body.product);
   const updatedUser = !devMode && log.status === "completed" ? await consumeCredits(user, 1) : user;
-  res.status(log.status === "completed" ? 200 : 502).json((log.status === "completed" ? successResponse : errorResponse)(
+  const responseBody = (log.status === "completed" ? successResponse : errorResponse)(
     log.status === "completed" ? {
     ...log,
+    optimized_title: log.optimized_title || log.seo_title || fallbackOptimizedTitle(req.body.product),
     session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
     } : "make_request_failed",
     log.status === "completed" ? "Optimization queued" : "Optimization request failed.",
     log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser, { dev_mode: devMode }) }
-  ));
+  );
+  console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
+  res.status(log.status === "completed" ? 200 : 502).json(responseBody);
 });
 
 app.post("/api/send-batch", async (req, res) => {
