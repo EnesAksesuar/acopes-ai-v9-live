@@ -413,6 +413,14 @@ function normalizeListingId(value = "") {
 function normalizeMakeResponsePayload(input = {}) {
   const source = input && typeof input === "object" ? input : {};
   const listing_id = normalizeListingId(source.listing_id);
+  const candidate = source.optimization || source.aiOptimization || source.ai_optimization || source.result || source.data || {};
+  const merged = {
+    ...candidate,
+    ...source
+  };
+  const titleCandidate = merged.seo_title || merged.optimized_title || merged.title || merged.ai_title || merged.optimizedTitle || merged.title_candidate || "";
+  const descriptionCandidate = merged.description || merged.optimized_description || merged.ai_description || merged.optimizedDescription || "";
+  const tagsCandidate = merged.tags || merged.optimized_tags || merged.ai_tags || merged.optimizedTags || [];
 
   if (!listing_id) {
     return { ok: false, error: "listing_id_required" };
@@ -421,23 +429,26 @@ function normalizeMakeResponsePayload(input = {}) {
   return {
     ok: true,
     value: {
-      ...source,
+      ...merged,
       listing_id,
-      seo_title: typeof source.seo_title === "string" ? source.seo_title : "",
-      description: typeof source.description === "string" ? source.description : "",
-      tags: Array.isArray(source.tags) ? source.tags.filter((tag) => typeof tag === "string").slice(0, 13) : [],
-      alt_text: typeof source.alt_text === "string" ? source.alt_text : "",
-      canva_prompt: typeof source.canva_prompt === "string" ? source.canva_prompt : "",
-      thumbnail_preview_url: typeof source.thumbnail_preview_url === "string" ? source.thumbnail_preview_url : "",
-      hero_thumbnail_url: typeof source.hero_thumbnail_url === "string" ? source.hero_thumbnail_url : "",
-      pinterest_title: typeof source.pinterest_title === "string" ? source.pinterest_title : "",
-      pinterest_description: typeof source.pinterest_description === "string" ? source.pinterest_description : "",
-      status: typeof source.status === "string" ? source.status : "completed",
-      seo_score: numberOrUndefined(source.seo_score),
-      ctr_score: numberOrUndefined(source.ctr_score),
-      thumbnail_score: numberOrUndefined(source.thumbnail_score),
-      tag_score: numberOrUndefined(source.tag_score),
-      alt_text_score: numberOrUndefined(source.alt_text_score)
+      seo_title: typeof titleCandidate === "string" ? titleCandidate : "",
+      optimized_title: typeof titleCandidate === "string" ? titleCandidate : "",
+      description: typeof descriptionCandidate === "string" ? descriptionCandidate : "",
+      optimized_description: typeof descriptionCandidate === "string" ? descriptionCandidate : "",
+      tags: Array.isArray(tagsCandidate) ? tagsCandidate.filter((tag) => typeof tag === "string").slice(0, 13) : [],
+      optimized_tags: Array.isArray(tagsCandidate) ? tagsCandidate.filter((tag) => typeof tag === "string").slice(0, 13) : [],
+      alt_text: typeof merged.alt_text === "string" ? merged.alt_text : "",
+      canva_prompt: typeof merged.canva_prompt === "string" ? merged.canva_prompt : "",
+      thumbnail_preview_url: typeof merged.thumbnail_preview_url === "string" ? merged.thumbnail_preview_url : "",
+      hero_thumbnail_url: typeof merged.hero_thumbnail_url === "string" ? merged.hero_thumbnail_url : "",
+      pinterest_title: typeof merged.pinterest_title === "string" ? merged.pinterest_title : "",
+      pinterest_description: typeof merged.pinterest_description === "string" ? merged.pinterest_description : "",
+      status: typeof merged.status === "string" ? merged.status : "completed",
+      seo_score: numberOrUndefined(merged.seo_score),
+      ctr_score: numberOrUndefined(merged.ctr_score),
+      thumbnail_score: numberOrUndefined(merged.thumbnail_score),
+      tag_score: numberOrUndefined(merged.tag_score),
+      alt_text_score: numberOrUndefined(merged.alt_text_score)
     }
   };
 }
@@ -486,32 +497,43 @@ function buildPayload(product) {
 
 function normalizeOptimization(input = {}) {
   const source = input && typeof input === "object" ? input : {};
+  const candidate = source.optimization || source.aiOptimization || source.ai_optimization || source.result || source.data || {};
+  const merged = {
+    ...candidate,
+    ...source
+  };
+  const titleCandidate = merged.seo_title || merged.optimized_title || merged.title || merged.ai_title || merged.optimizedTitle || merged.title_candidate || "";
+  const descriptionCandidate = merged.description || merged.optimized_description || merged.ai_description || merged.optimizedDescription || "";
+  const tagsCandidate = merged.tags || merged.optimized_tags || merged.ai_tags || merged.optimizedTags || [];
   return {
-    seo_title: typeof source.seo_title === "string" ? source.seo_title : "",
-    description: typeof source.description === "string" ? source.description : "",
-    tags: Array.isArray(source.tags) ? source.tags.filter((tag) => typeof tag === "string").slice(0, 13) : [],
-    alt_text: typeof source.alt_text === "string" ? source.alt_text : "",
-    canva_prompt: typeof source.canva_prompt === "string" ? source.canva_prompt : "",
+    seo_title: typeof titleCandidate === "string" ? titleCandidate : "",
+    optimized_title: typeof titleCandidate === "string" ? titleCandidate : "",
+    description: typeof descriptionCandidate === "string" ? descriptionCandidate : "",
+    optimized_description: typeof descriptionCandidate === "string" ? descriptionCandidate : "",
+    tags: Array.isArray(tagsCandidate) ? tagsCandidate.filter((tag) => typeof tag === "string").slice(0, 13) : [],
+    optimized_tags: Array.isArray(tagsCandidate) ? tagsCandidate.filter((tag) => typeof tag === "string").slice(0, 13) : [],
+    alt_text: typeof merged.alt_text === "string" ? merged.alt_text : "",
+    canva_prompt: typeof merged.canva_prompt === "string" ? merged.canva_prompt : "",
     thumbnail_preview_url:
-      typeof source.thumbnail_preview_url === "string"
-        ? source.thumbnail_preview_url
-        : typeof source.hero_thumbnail_url === "string"
-          ? source.hero_thumbnail_url
+      typeof merged.thumbnail_preview_url === "string"
+        ? merged.thumbnail_preview_url
+        : typeof merged.hero_thumbnail_url === "string"
+          ? merged.hero_thumbnail_url
           : "",
-    pinterest_title: typeof source.pinterest_title === "string" ? source.pinterest_title : "",
-    pinterest_description: typeof source.pinterest_description === "string" ? source.pinterest_description : "",
+    pinterest_title: typeof merged.pinterest_title === "string" ? merged.pinterest_title : "",
+    pinterest_description: typeof merged.pinterest_description === "string" ? merged.pinterest_description : "",
     optimization_status:
-      typeof source.status === "string"
-        ? source.status
-        : typeof source.optimization_status === "string"
-          ? source.optimization_status
+      typeof merged.status === "string"
+        ? merged.status
+        : typeof merged.optimization_status === "string"
+          ? merged.optimization_status
           : "completed",
     provided_scores: {
-      seo_score: numberOrUndefined(source.seo_score),
-      ctr_score: numberOrUndefined(source.ctr_score),
-      thumbnail_score: numberOrUndefined(source.thumbnail_score),
-      tag_quality_score: numberOrUndefined(source.tag_score ?? source.tag_quality_score),
-      alt_text_score: numberOrUndefined(source.alt_text_score)
+      seo_score: numberOrUndefined(merged.seo_score),
+      ctr_score: numberOrUndefined(merged.ctr_score),
+      thumbnail_score: numberOrUndefined(merged.thumbnail_score),
+      tag_quality_score: numberOrUndefined(merged.tag_score ?? merged.tag_quality_score),
+      alt_text_score: numberOrUndefined(merged.alt_text_score)
     }
   };
 }
@@ -1143,6 +1165,7 @@ async function sendToMake(product) {
     } catch {
       parsed = null;
     }
+    console.log("AI optimization raw:", parsed || responseText);
 
     const log = {
       id: crypto.randomUUID(),
@@ -1162,10 +1185,11 @@ async function sendToMake(product) {
     logs.unshift(log);
     await writeLogs(logs);
 
-    if (response.ok && parsed && parsed.seo_title) {
+    if (response.ok && parsed) {
+      const normalizedParsed = normalizeOptimization(parsed);
       await createOptimizationRecord({
         listing: product,
-        optimized: parsed,
+        optimized: normalizedParsed,
         request_log_id: log.id
       });
     }

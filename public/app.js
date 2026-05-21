@@ -4,6 +4,7 @@ let queueRecords = [];
 let logRecords = [];
 let currentSession = null;
 let dashboardInitialized = false;
+const selectedListingIds = new Set();
 const DEBUG_MODE = true;
 
 const productsEl = document.querySelector("#products");
@@ -585,6 +586,7 @@ async function syncEtsyListings() {
     }
     const payload = unwrapResponse(result, result);
     products = Array.isArray(payload.listings) ? payload.listings : [];
+    pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
     renderEtsyAuthStatus(payload.etsy);
@@ -668,9 +670,51 @@ async function refreshSession() {
   }
 }
 
+function productSelectionId(product = {}, index = 0) {
+  return String(product.listing_id || product.id || product.name || product.title || index);
+}
+
+function pruneSelectedListings() {
+  const liveIds = new Set(products.map((product, index) => productSelectionId(product, index)));
+  [...selectedListingIds].forEach((id) => {
+    if (!liveIds.has(id)) selectedListingIds.delete(id);
+  });
+}
+
 function selectedProducts() {
-  const selectedIds = [...document.querySelectorAll("[data-product-index]:checked")].map((input) => Number(input.dataset.productIndex));
-  return selectedIds.map((index) => products[index]);
+  return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)));
+}
+
+function optimizedTitleFrom(after = {}, product = {}) {
+  const title =
+    after?.seo_title ||
+    after?.optimized_title ||
+    after?.title ||
+    after?.ai_title ||
+    after?.optimizedTitle ||
+    after?.title_candidate ||
+    "";
+  if (title && title !== "AI optimized title") return title;
+  if (after?.pinterest_title && after.pinterest_title !== "AI optimized title") return after.pinterest_title;
+  return product.optimized_title || "";
+}
+
+function optimizedDescriptionFrom(after = {}) {
+  return after?.description || after?.optimized_description || after?.ai_description || "";
+}
+
+function optimizedTagsFrom(after = {}) {
+  return Array.isArray(after?.tags) && after.tags.length ? after.tags : Array.isArray(after?.optimized_tags) ? after.optimized_tags : [];
+}
+
+function requireSelectedProducts() {
+  const selected = selectedProducts();
+  if (!selected.length) {
+    showToast("Select at least one listing first.", "error");
+    setStatus("Failed");
+    return [];
+  }
+  return selected;
 }
 
 function renderProducts() {
@@ -682,15 +726,18 @@ function renderProducts() {
   const latestByListing = new Map(optimizationRecords.map((record) => [record.listing_id, record]));
   productsEl.innerHTML = products
     .map((product, index) => {
+      const selectionId = productSelectionId(product, index);
       const optimization = latestByListing.get(product.listing_id);
       const displayAfter = optimization?.after || null;
-      const optimizedTitle = displayAfter?.seo_title && displayAfter.seo_title !== "AI optimized title" ? displayAfter.seo_title : "";
+      const optimizedTitle = optimizedTitleFrom(displayAfter, product);
+      const optimizedDescription = optimizedDescriptionFrom(displayAfter);
+      const optimizedTags = optimizedTagsFrom(displayAfter);
       const previewImage = displayAfter?.thumbnail_preview_url || product.image_url;
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
       const previewAttr = previewImage ? `data-preview="${escapeAttribute(previewImage)}"` : "";
       return `
         <label class="product-card ${animated}">
-          <input type="checkbox" data-product-index="${index}" ${index === 0 ? "checked" : ""} />
+          <input type="checkbox" data-product-index="${index}" data-product-id="${escapeAttribute(selectionId)}" ${selectedListingIds.has(selectionId) ? "checked" : ""} />
           <div class="thumb-wrap">
             ${imageOrPlaceholder(previewImage, "", previewAttr)}
           </div>
@@ -705,8 +752,8 @@ function renderProducts() {
             </div>
             ${displayAfter ? `
               <div class="optimized-preview">
-                <p>${escapeHtml(displayAfter.description)}</p>
-                <small>${escapeList(displayAfter.tags)}</small>
+                <p>${escapeHtml(optimizedDescription)}</p>
+                <small>${escapeList(optimizedTags)}</small>
               </div>
             ` : ""}
             <div class="mini-scores">
@@ -773,7 +820,8 @@ function renderOptimizations(records) {
   optimizationsEl.innerHTML = records
     .map(
       (record) => {
-        const optimizedTitle = record.after.seo_title && record.after.seo_title !== "AI optimized title" ? record.after.seo_title : "";
+        const optimizedTitle = optimizedTitleFrom(record.after, {});
+        const optimizedTags = optimizedTagsFrom(record.after);
         const recordStatus = record.status || "";
         const beforeImageAttr = record.before.image_url ? `data-preview="${escapeAttribute(record.before.image_url)}"` : "";
         const afterImageAttr = record.after.thumbnail_preview_url ? `data-preview="${escapeAttribute(record.after.thumbnail_preview_url)}"` : "";
@@ -803,7 +851,7 @@ function renderOptimizations(records) {
               </div>
               <div class="comparison secondary-compare">
                 <div><small>Before tags</small><p>${escapeList(record.before.tags)}</p></div>
-                <div><small>After tags</small><p>${escapeList(record.after.tags)}</p></div>
+                <div><small>After tags</small><p>${escapeList(optimizedTags)}</p></div>
               </div>
               ${renderRewriteModes(record.id)}
               ${renderCompetitorSnapshot()}
@@ -1046,6 +1094,7 @@ async function refreshListings() {
       if (a.details_status !== "synced" && b.details_status === "synced") return 1;
       return String(a.title || "").localeCompare(String(b.title || ""));
     });
+    pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
     setStatus("Completed");
@@ -1063,7 +1112,7 @@ async function refreshListings() {
 
 async function sendSingle(product) {
   if (!product) {
-    showToast("Select a listing before generating an optimization.", "error");
+    showToast("Select at least one listing first.", "error");
     setStatus("Failed");
     return;
   }
@@ -1106,7 +1155,7 @@ async function sendSingle(product) {
 
 async function sendBatch(productsToSend) {
   if (!productsToSend.length) {
-    showToast("Select at least one listing before sending a batch.", "error");
+    showToast("Select at least one listing first.", "error");
     setStatus("Failed");
     return;
   }
@@ -1161,19 +1210,21 @@ async function initializeDashboard() {
 }
 
 sendSelectedBtn?.addEventListener("click", async () => {
-  const [product] = selectedProducts();
+  const [product] = requireSelectedProducts();
+  if (!product) return;
   await sendSingle(product);
 });
 
 sendBatchBtn?.addEventListener("click", async () => {
-  const batch = selectedProducts();
+  const batch = requireSelectedProducts();
+  if (!batch.length) return;
   await sendBatch(batch);
 });
 
 refreshListingsBtn?.addEventListener("click", refreshListings);
 
 queueBatchBtn?.addEventListener("click", async () => {
-  const batch = selectedProducts();
+  const batch = requireSelectedProducts();
   if (!batch.length) return;
   await fetch("/api/queue", {
     method: "POST",
@@ -1284,6 +1335,20 @@ productsEl?.addEventListener("click", async (event) => {
     body: JSON.stringify({ listings: [{ listing_id: record.listing_id, name: record.listing_name }] })
   });
   await refreshQueue();
+});
+
+productsEl?.addEventListener("change", (event) => {
+  const checkbox = event.target.closest("[data-product-id]");
+  if (!checkbox) return;
+  const productId = String(checkbox.dataset.productId || "");
+  if (!productId) return;
+  if (checkbox.checked) {
+    selectedListingIds.add(productId);
+  } else {
+    selectedListingIds.delete(productId);
+  }
+  renderBatchDashboard();
+  renderCommerceIntelligence();
 });
 
 thumbnailModalEl?.addEventListener("click", (event) => {
