@@ -41,6 +41,7 @@ const ETSY_API_FALLBACK_BASE = "https://openapi.etsy.com/v3/application";
 const FALLBACK_SHOP_NAME = (process.env.ETSY_SHOP_NAME || shopUrl.split("/shop/")[1] || "").trim();
 const FALLBACK_SHOP_URL = (process.env.ETSY_SHOP_URL || shopUrl).trim();
 const FREE_OPTIMIZATION_LIMIT = 15;
+const ETSY_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const PLAN_CREDITS = {
   free: 15,
   pro: 100,
@@ -752,7 +753,7 @@ function etsyConfigured() {
 }
 
 function etsyTokenUsable(tokens = {}) {
-  return Boolean(tokens.access_token && tokens.expires_at && Number(tokens.expires_at) > Date.now() + 60000);
+  return Boolean(tokens.access_token && tokens.expires_at && Number(tokens.expires_at) > Date.now() + ETSY_REFRESH_WINDOW_MS);
 }
 
 async function etsyTokenStatus() {
@@ -779,12 +780,18 @@ async function etsyTokenStatus() {
     scopes: tokens.scope || ETSY_SCOPES,
     expires_at: tokens.expires_at ? new Date(tokens.expires_at).toISOString() : "",
     reconnect_required: connected && expired && !tokens.refresh_token,
+    token_status: tokens.last_refresh_status || (connected && !expired ? "active" : expired ? "reconnect_required" : "not_connected"),
     draft_safe: true
   };
 }
 
 async function refreshEtsyToken(tokens) {
-  if (!tokens.refresh_token) throw new Error("Etsy refresh token is missing.");
+  if (!tokens.refresh_token) {
+    const error = new Error("Etsy refresh token is missing.");
+    error.code = "token_refresh_failed";
+    error.reconnect_required = true;
+    throw error;
+  }
   const response = await fetch(ETSY_TOKEN_URL, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -795,13 +802,22 @@ async function refreshEtsyToken(tokens) {
     })
   });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw new Error(payload.error_description || payload.error || "Etsy token refresh failed.");
+  if (!response.ok) {
+    const error = new Error(payload.error_description || payload.error || "Etsy token refresh failed.");
+    error.code = "token_refresh_failed";
+    error.status = response.status;
+    error.reconnect_required = true;
+    throw error;
+  }
   const updated = {
     ...tokens,
     access_token: payload.access_token,
     refresh_token: payload.refresh_token || tokens.refresh_token,
+    token_type: payload.token_type || tokens.token_type || "Bearer",
     scope: payload.scope || tokens.scope,
     expires_at: Date.now() + Number(payload.expires_in || 3600) * 1000,
+    last_refresh_status: "refreshed",
+    last_refreshed_at: new Date().toISOString(),
     updated_at: new Date().toISOString()
   };
   await writeEtsyTokens(updated);
@@ -809,14 +825,19 @@ async function refreshEtsyToken(tokens) {
   return updated;
 }
 
-async function getValidEtsyToken() {
+async function ensureValidEtsyToken() {
   let tokens = await readEtsyTokens();
   if (!tokens.access_token) throw new Error("Etsy is not connected.");
   if (!etsyTokenUsable(tokens)) tokens = await refreshEtsyToken(tokens);
+  else if (tokens.last_refresh_status !== "active") {
+    tokens = { ...tokens, last_refresh_status: "active" };
+    await writeEtsyTokens(tokens);
+  }
   return tokens;
 }
 
 async function etsyApi(pathname, tokens) {
+  tokens = await ensureValidEtsyToken();
   let lastError = null;
   for (const baseUrl of [ETSY_API_BASE, ETSY_API_FALLBACK_BASE]) {
     try {
@@ -942,7 +963,7 @@ async function discoverEtsyShop(tokens) {
 }
 
 async function syncEtsyListings() {
-  const tokens = await discoverEtsyShop(await getValidEtsyToken());
+  const tokens = await discoverEtsyShop(await ensureValidEtsyToken());
   const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens);
   const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
     ...listing,
@@ -1246,11 +1267,12 @@ app.post("/api/etsy/sync", async (_req, res) => {
       etsy: await etsyTokenStatus()
     }, "Etsy listings synced"));
   } catch (error) {
-    const status = error?.status === 401 ? 401 : 502;
+    const isRefreshFailure = error?.code === "token_refresh_failed";
+    const status = isRefreshFailure || error?.status === 401 ? 401 : 502;
     res.status(status).json(errorResponse(
-      status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed",
+      isRefreshFailure ? "token_refresh_failed" : status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed",
       error instanceof Error ? error.message : String(error),
-      { etsy: await etsyTokenStatus() }
+      { etsy: { ...(await etsyTokenStatus()), reconnect_required: true, token_status: "reconnect_required" } }
     ));
   }
 });

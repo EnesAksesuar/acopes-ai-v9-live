@@ -526,13 +526,15 @@ function renderEtsyAuthStatus(status = {}) {
   const configured = Boolean(status.configured);
   const connected = Boolean(status.connected);
   const expired = Boolean(status.expired);
-  const badge = !configured ? "Not configured" : expired ? "Token expired" : connected ? "Connected" : "Not connected";
-  const badgeClass = !configured || expired ? "failed" : connected ? "completed" : "queued";
+  const tokenStatus = status.token_status || "";
+  const badge = !configured ? "Not configured" : status.reconnect_required ? "Reconnect required" : tokenStatus === "refreshed" ? "Token refreshed" : expired ? "Token expired" : connected ? "Token active" : "Not connected";
+  const badgeClass = !configured || expired || status.reconnect_required ? "failed" : connected ? "completed" : "queued";
   etsyAuthStatusEl.innerHTML = `
     <div class="auth-status-row"><span>Status</span><strong class="${badgeClass}">${escapeHtml(badge)}</strong></div>
     <div class="auth-status-row"><span>Shop</span><strong>${escapeHtml(status.shop_name || status.shop_id || "No shop connected")}</strong></div>
     ${status.shop_url ? `<div class="auth-status-row"><span>Shop URL</span><strong>${escapeHtml(status.shop_url)}</strong></div>` : ""}
     <div class="auth-status-row"><span>Scopes</span><strong>${escapeHtml(status.scopes || "listings_r shops_r")}</strong></div>
+    <div class="auth-status-row"><span>Token</span><strong>${escapeHtml(badge)}</strong></div>
     <div class="auth-status-row"><span>Mode</span><strong>Draft-safe only</strong></div>
     ${status.expires_at ? `<small>Token expires: ${escapeHtml(new Date(status.expires_at).toLocaleString())}</small>` : `<small>Connect Etsy to pull live seller listings.</small>`}
   `;
