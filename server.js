@@ -327,9 +327,13 @@ function numberOrUndefined(value) {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function normalizeListingId(value = "") {
+  return String(value ?? "").trim();
+}
+
 function normalizeMakeResponsePayload(input = {}) {
   const source = input && typeof input === "object" ? input : {};
-  const listing_id = String(source.listing_id || "").trim();
+  const listing_id = normalizeListingId(source.listing_id);
 
   if (!listing_id) {
     return { ok: false, error: "listing_id_required" };
@@ -1452,7 +1456,11 @@ app.post("/api/make-response", async (req, res) => {
   }
   const optimized = validated.value;
   const listings = await readListingsCache();
-  const listing = listings.find((item) => item.listing_id === optimized.listing_id);
+  const incomingListingId = normalizeListingId(optimized.listing_id);
+  const listing = listings.find((item) => {
+    const storedListingId = normalizeListingId(item.listing_id || item.id);
+    return storedListingId === incomingListingId;
+  });
   if (!listing) {
     res.status(404).json(errorResponse("listing_not_found", "Listing not found"));
     return;
