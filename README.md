@@ -473,6 +473,15 @@ Approved records are marked `awaiting_authenticated_etsy_executor` instead of be
   - `GET /api/session`
   - `POST /api/test-make-response`
 
+## Vercel Serverless Notes
+
+- `server.js` exports the Express app for Vercel serverless deployment.
+- Local development still runs `app.listen()` through `npm.cmd run dev`.
+- Runtime JSON writes use `/tmp/acopes-ai` by default, not the read-only Vercel project directory.
+- Seed/demo data can still be read from the repository `data/` folder.
+- Persistent production storage should move to a database before paid launch because `/tmp` is ephemeral in serverless environments.
+- `/api/make-response` remains available as the Make callback route on Vercel.
+
 ## Beta Goal
 
 Launch publicly, gather seller feedback, validate conversion value, then introduce paid Pro features after product-market signal is clear.

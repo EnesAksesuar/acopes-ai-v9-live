@@ -8,17 +8,27 @@ const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 await loadDotEnv(path.join(__dirname, ".env"));
 const PORT = process.env.PORT || 4173;
+const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
+const runtimeDataDir = path.join(process.env.ACOPES_DATA_DIR || "/tmp", "acopes-ai");
+const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
-const logsPath = path.join(__dirname, "data", "automation-logs.json");
-const legacyListingsCachePath = path.join(__dirname, "data", "etsy-listings.json");
-const listingsCachePath = path.join(__dirname, "data", "listings.json");
-const optimizationsPath = path.join(__dirname, "data", "optimization-history.json");
-const queuePath = path.join(__dirname, "data", "optimization-queue.json");
-const sessionsPath = path.join(__dirname, "data", "sessions.json");
-const usersPath = path.join(__dirname, "data", "users.json");
-const etsyTokensPath = path.join(__dirname, "data", "etsy-tokens.json");
-const waitlistPath = path.join(__dirname, "data", "waitlist.json");
-const analyticsPath = path.join(__dirname, "data", "analytics.json");
+const logsPath = path.join(runtimeDataDir, "automation-logs.json");
+const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
+const listingsSeedPath = path.join(seedDataDir, "listings.json");
+const listingsCachePath = path.join(runtimeDataDir, "listings.json");
+const optimizationsPath = path.join(runtimeDataDir, "optimization-history.json");
+const optimizationsSeedPath = path.join(seedDataDir, "optimization-history.json");
+const queuePath = path.join(runtimeDataDir, "optimization-queue.json");
+const queueSeedPath = path.join(seedDataDir, "optimization-queue.json");
+const sessionsPath = path.join(runtimeDataDir, "sessions.json");
+const usersPath = path.join(runtimeDataDir, "users.json");
+const usersSeedPath = path.join(seedDataDir, "users.json");
+const etsyTokensPath = path.join(runtimeDataDir, "etsy-tokens.json");
+const etsyTokensSeedPath = path.join(seedDataDir, "etsy-tokens.json");
+const waitlistPath = path.join(runtimeDataDir, "waitlist.json");
+const analyticsPath = path.join(runtimeDataDir, "analytics.json");
+const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
+const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
 const shopUrl = "https://www.etsy.com/shop/EDELLUXE";
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || process.env.ETSY_API_KEY || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
@@ -88,11 +98,10 @@ app.use(async (req, res, next) => {
 });
 
 async function ensureLogsFile() {
-  await fs.mkdir(path.dirname(logsPath), { recursive: true });
   try {
     await fs.access(logsPath);
   } catch {
-    await fs.writeFile(logsPath, "[]\n", "utf8");
+    await writeJsonFile(logsPath, await readJsonFile(path.join(seedDataDir, "automation-logs.json"), []));
   }
 }
 
@@ -110,7 +119,13 @@ async function readListingsCache() {
     const listings = parseJsonText(await fs.readFile(listingsCachePath, "utf8"), []);
     if (Array.isArray(listings) && listings.length) return listings;
   } catch {
-    // Fall back to the old V8 cache name for backward compatibility.
+    // Fall back to seeded cache files for backward compatibility.
+  }
+  try {
+    const listings = parseJsonText(await fs.readFile(listingsSeedPath, "utf8"), []);
+    if (Array.isArray(listings) && listings.length) return listings;
+  } catch {
+    // Legacy seed file remains supported.
   }
   try {
     return parseJsonText(await fs.readFile(legacyListingsCachePath, "utf8"), []);
@@ -122,7 +137,7 @@ async function readListingsCache() {
 async function writeListingsCache(listings, meta = {}) {
   const normalizedListings = Array.isArray(listings) ? listings.map(normalizeListing) : [];
   await writeJsonFile(listingsCachePath, normalizedListings);
-  await writeJsonFile(path.join(__dirname, "data", "listings-meta.json"), {
+  await writeJsonFile(listingsMetaPath, {
     ...meta,
     count: normalizedListings.length,
     updated_at: new Date().toISOString()
@@ -149,6 +164,18 @@ async function writeJsonFile(filePath, value) {
   await fs.writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 }
 
+async function readRuntimeJson(runtimePath, seedPath, fallback = []) {
+  try {
+    return parseJsonText(await fs.readFile(runtimePath, "utf8"), fallback);
+  } catch {
+    try {
+      return parseJsonText(await fs.readFile(seedPath, "utf8"), fallback);
+    } catch {
+      return fallback;
+    }
+  }
+}
+
 async function updateSession(sessionId, patch) {
   const sessions = await readJsonFile(sessionsPath);
   const session = sessions.find((item) => item.id === sessionId);
@@ -163,7 +190,7 @@ function normalizeEmail(email = "") {
 }
 
 async function readUsers() {
-  return readJsonFile(usersPath);
+  return readRuntimeJson(usersPath, usersSeedPath, []);
 }
 
 async function writeUsers(users) {
@@ -231,7 +258,7 @@ async function consumeCredits(user, amount) {
 }
 
 async function incrementAnalytics(event) {
-  const analytics = await readJsonFile(analyticsPath, {
+  const analytics = await readRuntimeJson(analyticsPath, analyticsSeedPath, {
     visits: 0,
     optimizations_started: 0,
     optimizations_completed: 0,
@@ -559,7 +586,7 @@ async function createOptimizationRecord({ listing, optimized, source = "make_res
     }
   };
 
-  const history = await readJsonFile(optimizationsPath);
+  const history = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
   history.unshift(record);
   await writeJsonFile(optimizationsPath, history);
   return record;
@@ -685,7 +712,7 @@ function normalizeListing(listing = {}) {
 }
 
 async function readEtsyTokens() {
-  return readJsonFile(etsyTokensPath, {});
+  return readRuntimeJson(etsyTokensPath, etsyTokensSeedPath, {});
 }
 
 async function writeEtsyTokens(tokens) {
@@ -693,7 +720,7 @@ async function writeEtsyTokens(tokens) {
 }
 
 async function readListingsMeta() {
-  return readJsonFile(path.join(__dirname, "data", "listings-meta.json"), {});
+  return readJsonFile(listingsMetaPath, {});
 }
 
 function etsyDebug(message, details = {}) {
@@ -1229,7 +1256,7 @@ app.post("/api/onboarding", async (req, res) => {
 });
 
 app.get("/api/analytics", async (_req, res) => {
-  res.json(successResponse(await readJsonFile(analyticsPath, {}), "Analytics loaded"));
+  res.json(successResponse(await readRuntimeJson(analyticsPath, analyticsSeedPath, {}), "Analytics loaded"));
 });
 
 app.post("/api/visit", async (_req, res) => {
@@ -1250,12 +1277,12 @@ app.post("/api/waitlist", async (req, res) => {
 });
 
 app.get("/api/optimizations", async (_req, res) => {
-  const records = await readJsonFile(optimizationsPath);
+  const records = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
   res.json(successResponse(records.map(enrichOptimizationRecord), "Optimizations loaded"));
 });
 
 app.get("/api/queue", async (_req, res) => {
-  res.json(successResponse(await readJsonFile(queuePath), "Queue loaded"));
+  res.json(successResponse(await readRuntimeJson(queuePath, queueSeedPath, []), "Queue loaded"));
 });
 
 app.get("/api/listings", async (_req, res) => {
@@ -1520,7 +1547,7 @@ app.post("/api/paddle-webhook-test", async (req, res) => {
 
 app.post("/api/queue", async (req, res) => {
   const listings = Array.isArray(req.body.listings) ? req.body.listings : [];
-  const queue = await readJsonFile(queuePath);
+  const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
   const queued = listings.map((listing) => ({
     id: crypto.randomUUID(),
     listing_id: listing.listing_id,
@@ -1536,7 +1563,7 @@ app.post("/api/queue", async (req, res) => {
 });
 
 app.post("/api/queue/:id/retry", async (req, res) => {
-  const queue = await readJsonFile(queuePath);
+  const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
   const item = queue.find((entry) => entry.id === req.params.id);
   if (!item) {
     res.status(404).json(errorResponse("queue_item_not_found", "Queue item not found"));
@@ -1550,7 +1577,7 @@ app.post("/api/queue/:id/retry", async (req, res) => {
 });
 
 app.post("/api/optimizations/:id/approve", async (req, res) => {
-  const history = await readJsonFile(optimizationsPath);
+  const history = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
   const record = history.find((item) => item.id === req.params.id);
   if (!record) {
     res.status(404).json(errorResponse("optimization_not_found", "Optimization not found"));
@@ -1565,21 +1592,10 @@ app.post("/api/optimizations/:id/approve", async (req, res) => {
   res.json(successResponse(record, "Draft approved"));
 });
 
-await ensureLogsFile();
-await writeListingsCache(await readListingsCache(), { source: "startup_cache_normalization" });
-await writeJsonFile(etsyTokensPath, await readJsonFile(etsyTokensPath, {}));
-await writeJsonFile(optimizationsPath, await readJsonFile(optimizationsPath));
-await writeJsonFile(queuePath, await readJsonFile(queuePath));
-await writeJsonFile(sessionsPath, await readJsonFile(sessionsPath));
-await writeJsonFile(usersPath, await readJsonFile(usersPath));
-await writeJsonFile(waitlistPath, await readJsonFile(waitlistPath));
-await writeJsonFile(analyticsPath, await readJsonFile(analyticsPath, {
-  visits: 0,
-  optimizations_started: 0,
-  optimizations_completed: 0,
-  waitlist_signups: 0,
-  by_event: {}
-}));
-app.listen(PORT, () => {
-console.log(`ACOPES AI optimization platform running at http://localhost:${PORT}`);
-});
+if (!IS_VERCEL) {
+  app.listen(PORT, () => {
+    console.log(`ACOPES AI optimization platform running at http://localhost:${PORT}`);
+  });
+}
+
+export default app;
