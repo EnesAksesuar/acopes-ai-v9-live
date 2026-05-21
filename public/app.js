@@ -584,7 +584,7 @@ async function syncEtsyListings() {
       return;
     }
     const payload = unwrapResponse(result, result);
-    products = Array.isArray(payload.listings) && payload.listings.length ? payload.listings : demoListings;
+    products = Array.isArray(payload.listings) ? payload.listings : [];
     renderProducts();
     renderCommerceIntelligence();
     renderEtsyAuthStatus(payload.etsy);
@@ -1032,14 +1032,14 @@ async function refreshListings() {
     debugLog("listing api response received", result);
     if (!response.ok || result?.success === false) {
       setStatus("Failed");
-      products = demoListings;
+      products = [];
       renderProducts();
       renderCommerceIntelligence();
-      showToast(result.message || "API unavailable. Demo listing loaded.", "error");
+      showToast(result.message || "API unavailable. Etsy listings were not loaded.", "error");
       return;
     }
     const payload = unwrapResponse(result, result);
-    products = Array.isArray(payload.listings) && payload.listings.length ? payload.listings : demoListings;
+    products = Array.isArray(payload.listings) ? payload.listings : [];
     if (payload.etsy) renderEtsyAuthStatus(payload.etsy);
     products.sort((a, b) => {
       if (a.details_status === "synced" && b.details_status !== "synced") return -1;
@@ -1050,14 +1050,14 @@ async function refreshListings() {
     renderCommerceIntelligence();
     setStatus("Completed");
     debugLog("listings loaded", { count: products.length });
-    if (payload.listings && !payload.listings.length) showToast("No Etsy listings found yet. Demo listing loaded.", "error");
+    if (payload.listings && !payload.listings.length) showToast("No Etsy listings found yet.", "error");
   } catch (error) {
     debugLog("listing fetch failed", error);
     setStatus("Failed");
-    products = demoListings;
+    products = [];
     renderProducts();
     renderCommerceIntelligence();
-    showToast("API unavailable. Demo listing loaded.", "error");
+    showToast("API unavailable. Etsy listings were not loaded.", "error");
   }
 }
 
@@ -1378,7 +1378,7 @@ refreshSession().then(async (session) => {
   if (session?.onboarding_completed && !session.email_required) {
     await initializeDashboard();
   } else {
-    products = demoListings;
+    products = [];
     renderProducts();
     renderCommerceIntelligence();
   }

@@ -1050,12 +1050,14 @@ async function discoverEtsyShop(tokens) {
 
 async function syncEtsyListings() {
   const tokens = await discoverEtsyShop(await ensureValidEtsyToken());
+  console.log("Fetching live Etsy listings", { shop_id: tokens.shop_id || "", shop_name: tokens.shop_name || "" });
   const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens);
   const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
     ...listing,
     sync_source: "etsy_api",
     details_status: "synced"
   })).filter((listing) => listing.listing_id && listing.title);
+  console.log("Live Etsy listing count", { count: listings.length });
   await writeListingsCache(listings, {
     source: "etsy_api",
     shop_id: tokens.shop_id,
@@ -1442,17 +1444,6 @@ app.get("/api/queue", async (_req, res) => {
 
 app.get("/api/listings", async (_req, res) => {
   try {
-    const cached = await readListingsCache();
-    if (cached.length) {
-      res.json(successResponse({
-        status: "completed",
-        source: cached.some((listing) => listing.sync_source === "etsy_api") ? "etsy_api_cache" : "authenticated_cache",
-        etsy: await etsyTokenStatus(),
-        listings: cached
-      }, "Listings loaded"));
-      return;
-    }
-
     const etsy = await etsyTokenStatus();
     if (etsy.configured && etsy.connected && !etsy.expired) {
       const listings = await syncEtsyListings();
@@ -1465,6 +1456,19 @@ app.get("/api/listings", async (_req, res) => {
       return;
     }
 
+    const cached = await readListingsCache();
+    if (cached.length) {
+      console.log("Using demo fallback", { reason: "etsy_not_connected_or_expired", count: cached.length });
+      res.json(successResponse({
+        status: "completed",
+        source: cached.some((listing) => listing.sync_source === "etsy_api") ? "etsy_api_cache" : "authenticated_cache",
+        etsy,
+        listings: cached
+      }, "Listings loaded"));
+      return;
+    }
+
+    console.log("Using demo fallback", { reason: "public_shop_fetch" });
     const publicListings = await fetchActiveListings();
     await writeListingsCache(publicListings, { source: "public_shop_fetch" });
     res.json(successResponse({
