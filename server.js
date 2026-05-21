@@ -1317,6 +1317,35 @@ app.post("/api/etsy/sync", async (_req, res) => {
   }
 });
 
+app.post("/api/etsy/refresh-sync", async (_req, res) => {
+  try {
+    const token = await ensureValidEtsyToken();
+    etsyDebug("Etsy token refresh debug", {
+      hasAccessToken: Boolean(token.access_token),
+      hasRefreshToken: Boolean(token.refresh_token),
+      expiresAt: token.expires_at || null,
+      isExpired: !etsyTokenUsable(token),
+      refreshAttempted: token.last_refresh_status === "refreshed",
+      refreshSuccess: token.last_refresh_status === "refreshed",
+      etsyStatusCode: null
+    });
+    const listings = await syncEtsyListings();
+    res.json(successResponse({
+      status: "completed",
+      source: "etsy_refresh_sync",
+      listings,
+      etsy: await etsyTokenStatus()
+    }, "Etsy refresh sync completed"));
+  } catch (error) {
+    const errorCode = error?.code === "missing_refresh_token" ? "missing_refresh_token" : error?.code === "token_refresh_failed" ? "token_refresh_failed" : "etsy_sync_failed";
+    res.status(errorCode === "etsy_sync_failed" ? 502 : 401).json(errorResponse(
+      errorCode,
+      error instanceof Error ? error.message : String(error),
+      { etsy: { ...(await etsyTokenStatus()), reconnect_required: true, token_status: "reconnect_required" } }
+    ));
+  }
+});
+
 app.post("/api/onboarding", async (req, res) => {
   const email = normalizeEmail(req.body.email);
   if (!email) {

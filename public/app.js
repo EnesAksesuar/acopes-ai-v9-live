@@ -540,7 +540,7 @@ function renderEtsyAuthStatus(status = {}) {
   `;
   if (connectEtsyBtn) connectEtsyBtn.hidden = connected && !expired;
   if (disconnectEtsyBtn) disconnectEtsyBtn.textContent = connected ? "Reconnect Etsy" : "Clear Etsy";
-  if (syncEtsyListingsBtn) syncEtsyListingsBtn.disabled = !configured || !connected || expired;
+  if (syncEtsyListingsBtn) syncEtsyListingsBtn.disabled = !configured || !connected;
 }
 
 async function refreshEtsyStatus() {
@@ -558,13 +558,20 @@ async function refreshEtsyStatus() {
 }
 
 async function syncEtsyListings() {
+  console.log("Refresh Sync clicked");
   setStatus("Processing");
+  showToast("Refreshing Etsy sync...", "success");
   renderProductsSkeleton();
-  if (syncEtsyListingsBtn) syncEtsyListingsBtn.disabled = true;
+  const previousText = syncEtsyListingsBtn?.textContent || "Refresh Sync";
+  if (syncEtsyListingsBtn) {
+    syncEtsyListingsBtn.disabled = true;
+    syncEtsyListingsBtn.textContent = "Refreshing...";
+  }
   try {
     debugLog("etsy live sync started");
-    const response = await fetch("/api/etsy/sync", { method: "POST" });
+    const response = await fetch("/api/etsy/refresh-sync", { method: "POST" });
     const result = await parseJsonResponse(response);
+    console.log("Refresh Sync response", { status: response.status, ok: response.ok, result });
     debugLog("etsy sync api response received", result);
     if (!response.ok || result?.success === false) {
       const message = result.message || result.error || "Etsy sync failed.";
@@ -582,12 +589,16 @@ async function syncEtsyListings() {
     setStatus("Completed");
     showToast(`Etsy sync completed. ${products.length} listings loaded.`, "success");
   } catch (error) {
+    console.log("Refresh Sync failed", error);
     debugLog("etsy sync failed", error);
     setStatus("Failed");
     showToast("API unavailable. Etsy sync failed.", "error");
     await refreshListings();
   } finally {
-    if (syncEtsyListingsBtn) syncEtsyListingsBtn.disabled = false;
+    if (syncEtsyListingsBtn) {
+      syncEtsyListingsBtn.disabled = false;
+      syncEtsyListingsBtn.textContent = previousText;
+    }
   }
 }
 
