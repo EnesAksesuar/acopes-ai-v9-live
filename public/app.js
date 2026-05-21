@@ -704,7 +704,7 @@ function optimizedTitleFrom(after = {}, product = {}) {
     "";
   if (title && title !== "AI optimized title") return title;
   if (after?.pinterest_title && after.pinterest_title !== "AI optimized title") return after.pinterest_title;
-  return product.optimized_title || "";
+  return product.optimizedTitle || product.optimized_title || "";
 }
 
 function optimizedDescriptionFrom(after = {}) {
@@ -750,8 +750,8 @@ function normalizeOptimizationResponse(payload = {}, listing = {}) {
         ? payload.optimized_tags
         : [];
   return {
-    seo_title: title || listing.optimized_title || generateTitleCandidate(listing),
-    optimized_title: title || listing.optimized_title || generateTitleCandidate(listing),
+    seo_title: title || listing.optimizedTitle || listing.optimized_title || generateTitleCandidate(listing),
+    optimized_title: title || listing.optimizedTitle || listing.optimized_title || generateTitleCandidate(listing),
     description,
     optimized_description: description,
     tags,
@@ -843,7 +843,6 @@ function handleAuthOrBillingError(response, result) {
   if (response.status === 402) {
     if (IS_DEV_HOST || result.session?.dev_mode || currentSession?.dev_mode) {
       if (upgradeModalEl) upgradeModalEl.hidden = true;
-      showToast("Development mode: unlimited optimization tests enabled.", "success");
       return true;
     }
     showUpgradeModal();
@@ -1280,6 +1279,8 @@ async function sendSingle(product) {
     });
     setStatus(response.ok ? "Queued" : "Failed");
     const result = await parseJsonResponse(response);
+    const data = unwrapResponse(result, result);
+    console.log("OPT RESPONSE", data);
     debugLog("send api response received", result);
     if (response.status === 401 || response.status === 402) {
       handleAuthOrBillingError(response, result);
@@ -1292,6 +1293,9 @@ async function sendSingle(product) {
       return;
     }
     if (result.session) renderSession(result.session);
+    product.optimizedTitle = data.optimized_title || data.optimizedTitle || result.optimized_title || result.optimizedTitle || "";
+    product.optimized_title = product.optimizedTitle;
+    renderProducts();
     applyOptimizationResponse(product, result);
     showToast("Optimization queued. ACOPES AI is processing this listing.", "success");
     await refreshLogs();
