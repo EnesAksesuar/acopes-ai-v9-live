@@ -1,0 +1,499 @@
+## Minimal Pearl Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: pearl choker
+        - button "Remove":
+        - text: quiet luxury gift
+        - button "Remove":
+        - text: dainty necklace
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: pearl jewelry
+        - button "Remove":
+        - text: everyday necklace
+        - button "Remove":
+        - text: layered necklace
+        - button "Remove":
+        - text: elegant necklace
+        - button "Remove":
+        - text: birthday gift
+        - button "Remove":
+        - text: classic pearl gift
+        - button "Remove":
+        - text: bridesmaid jewelry
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: wedding jewelry
+        - button "Remove":
+        - listitem: All 13 used
+    - button "Primary color":
+      - paragraph: Primary color
+    - textbox "Primary color":
+      - /placeholder: Type to search…
+      - text: White
+    - button "Clear selected":
+    - paragraph: Necklace length
+    - textbox "Necklace length": "17.71"
+    - generic: Choose a unit
+    - combobox "Choose a unit":
+      - option "Choose a unit"
+      - option "Centimeters"
+      - option "Feet"
+      - optio
+
+## Pearl Gold Bar Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: pearl bar necklace
+        - button "Remove":
+        - text: quiet luxury gift
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: gold bar necklace
+        - button "Remove":
+        - text: pearl jewelry
+        - button "Remove":
+        - text: everyday necklace
+        - button "Remove":
+        - text: layered necklace
+        - button "Remove":
+        - text: elegant necklace
+        - button "Remove":
+        - text: birthday gift
+        - button "Remove":
+        - text: classic jewelry
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: gold accent jewelry
+        - button "Remove":
+        - text: bar pearl necklace
+        - button "Remove":
+        - listitem: All 13 used
+    - button "Primary color":
+      - paragraph: Primary color
+    - textbox "Primary color":
+      - /placeholder: Type to search…
+      - text: Gold
+    - button "Clear selected":
+    - paragraph: Necklace length
+    - textbox "Necklace length": "17.71"
+    - generic: Choose a unit
+    - combobox "Choose a unit":
+      - option "Choose a unit"
+      - option "Centimeters"
+      - option "Feet"
+     
+
+## Gold Herringbone Chain Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: gold necklace
+        - button "Remove":
+        - text: layering necklace
+        - button "Remove":
+        - text: everyday jewelry
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: snake chain necklace
+        - button "Remove":
+        - text: flat snake chain
+        - button "Remove":
+        - text: dainty gold necklace
+        - button "Remove":
+        - text: trendy gold jewelry
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: mothers day jewelry
+        - button "Remove":
+        - text: goldherringbonechain
+        - button "Remove":
+        - text: inspired necklace
+        - button "Remove":
+        - text: birthdaygiftforwomen
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: Stainless steel
+        - button "Remove":
+        - text: gold
+        -
+
+## Layered Gold Bead Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: gold necklace
+        - button "Remove":
+        - text: layered chain
+        - button "Remove":
+        - text: dainty jewelry
+        - button "Remove":
+        - text: minimal necklace
+        - button "Remove":
+        - text: handmade gift
+        - button "Remove":
+        - text: gold bead chain
+        - button "Remove":
+        - text: minimalist layer
+        - button "Remove":
+        - text: chic gold design
+        - button "Remove":
+        - text: elegant layering
+        - button "Remove":
+        - text: everyday necklace
+        - button "Remove":
+        - text: mothers day gift
+        - button "Remove":
+        - text: bridesmaid jewelry
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: gold
+        - button "Remove":
+        - text: Stainless steel
+        - button "Remove":
+        - list
+
+## Minimal Gold Heart Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag":
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add"
+      - list:
+        - listitem: 13 left
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material" [disabled]:
+        - /placeholder: Ingredients, components, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: Stainless steel
+        - button "Remove":
+        - text: gold
+        - button "Remove":
+        - text: gold necklace
+        - button "Remove":
+        - text: heart necklace
+        - button "Remove":
+        - text: dainty jewelry
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: layering necklace
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: valentines gift
+        - button "Remove":
+        - text: quiet luxury
+        - button "Remove":
+        - text: feminine jewelry
+        - button "Remove":
+        - text: wife gift
+        - button "Remove":
+        - text: romantic jewelry
+        - button "Remove":
+        - listitem: All 13 used
+    - button "Primary color":
+      - paragraph: Primary color
+    - textbox "Primary color":
+      - /placeholde
+
+## Gold Heart Locket Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: heart necklace
+        - button "Remove":
+        - text: locket necklace
+        - button "Remove":
+        - text: gold jewelry
+        - button "Remove":
+        - text: keepsake necklace
+        - button "Remove":
+        - text: vintage locket
+        - button "Remove":
+        - text: memory locket
+        - button "Remove":
+        - text: gift for women
+        - button "Remove":
+        - text: anniversary gift
+        - button "Remove":
+        - text: mothers day jewelry
+        - button "Remove":
+        - text: photo locketnecklace
+        - button "Remove":
+        - text: heart pendantjewelry
+        - button "Remove":
+        - text: personalizednecklace
+        - button "Remove":
+        - text: romantic giftjewelry
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: Stainless steel
+        - button "Remove":
+        - text: gold
+        - button "Remo
+
+## Gold Figaro Chain Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: gold chain necklace
+        - button "Remove":
+        - text: unisex necklace
+        - button "Remove":
+        - text: minimalist necklace
+        - button "Remove":
+        - text: everyday chain
+        - button "Remove":
+        - text: layering gold chain
+        - button "Remove":
+        - text: gift for men
+        - button "Remove":
+        - text: mens gold necklace
+        - button "Remove":
+        - text: womens gold chain
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: figaro chain
+        - button "Remove":
+        - text: gold figaro chain
+        - button "Remove":
+        - text: unisex gold chain
+        - button "Remove":
+        - text: chain necklace gift
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: chain
+        - button "Remove":
+        - text: gold
+        - button "Remove":
+   
+
+## Gold Box Chain Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: gold chain necklace
+        - button "Remove":
+        - text: box chain necklace
+        - button "Remove":
+        - text: unisex jewelry
+        - button "Remove":
+        - text: gold plated necklace
+        - button "Remove":
+        - text: layering chain
+        - button "Remove":
+        - text: minimalist necklace
+        - button "Remove":
+        - text: 18k gold chain
+        - button "Remove":
+        - text: everyday jewelry
+        - button "Remove":
+        - text: gift for him
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: handmade necklace
+        - button "Remove":
+        - text: modern jewelry
+        - button "Remove":
+        - text: classic gold chain
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: chain
+        - button "Remove":
+        - text: gold
+        - button "Remove":
+        - li
+
+## Pearl Chain Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: pearl chain necklace
+        - button "Remove":
+        - text: coastal jewelry
+        - button "Remove":
+        - text: layering necklace
+        - button "Remove":
+        - text: gold pearl necklace
+        - button "Remove":
+        - text: gift for her
+        - button "Remove":
+        - text: summer jewelry
+        - button "Remove":
+        - text: pearl jewelry
+        - button "Remove":
+        - text: modern necklace
+        - button "Remove":
+        - text: beach jewelry
+        - button "Remove":
+        - text: birthday gift
+        - button "Remove":
+        - text: quiet luxury gift
+        - button "Remove":
+        - text: handmade necklace
+        - button "Remove":
+        - text: coastal gift
+        - button "Remove":
+        - listitem: All 13 used
+    - paragraph: Materials
+    - paragraph: Select up to 2 more
+    - textbox "Materials Select up to 2 more":
+      - /placeholder: Type to search…
+    - list:
+      - text: Faux pearls
+      - button "Remove":
+      - text: Mother of pearl
+      - button "Remove":
+      - text: Pearl
+      - button "Remove":
+    - paragraph: Gold solidity
+    - paragraph: Select up to 2 more
+    - textbox "Gold solidity Select 
+
+## Gold Heart Y Lariat Necklace
+group "Tags":
+      - generic: Tags
+      - generic: Add tag
+      - paragraph: Add up to 13 tags to help people search for your listings.
+      - textbox "Add tag" [disabled]:
+        - /placeholder: Shape, color, style, function, etc.
+      - button "Add" [disabled]
+      - list:
+        - text: gold heart necklace
+        - button "Remove":
+        - text: lariat necklace
+        - button "Remove":
+        - text: gold chain choker
+        - button "Remove":
+        - text: minimalist jewelry
+        - button "Remove":
+        - text: gold plated necklace
+        - button "Remove":
+        - text: dainty gold necklace
+        - button "Remove":
+        - text: heart chain necklace
+        - button "Remove":
+        - text: y shape necklace
+        - button "Remove":
+        - text: layering necklace
+        - button "Remove":
+        - text: everyday jewelry
+        - button "Remove":
+        - text: valentine gift
+        - button "Remove":
+        - text: anniversary gift
+        - button "Remove":
+        - text: birthdaygiftforwomen
+        - button "Remove":
+        - listitem: All 13 used
+    - group "Material tags":
+      - generic: Material tags
+      - generic: Add material
+      - paragraph: Buyers value transparency—tell them what’s used to make your item.
+      - textbox "Add material":
+        - /placeholder: Ingredients, components, etc.
+      - button "Add"
+      - list:
+        - text: gold
+        - button "Remove":
+        - text: Stainless steel
+        
