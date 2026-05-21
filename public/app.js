@@ -535,6 +535,8 @@ function renderEtsyAuthStatus(status = {}) {
     ${status.shop_url ? `<div class="auth-status-row"><span>Shop URL</span><strong>${escapeHtml(status.shop_url)}</strong></div>` : ""}
     <div class="auth-status-row"><span>Scopes</span><strong>${escapeHtml(status.scopes || "listings_r shops_r")}</strong></div>
     <div class="auth-status-row"><span>Token</span><strong>${escapeHtml(badge)}</strong></div>
+    ${status.source ? `<div class="auth-status-row"><span>Auth source</span><strong>${escapeHtml(status.source)}</strong></div>` : ""}
+    ${status.error ? `<div class="auth-status-row"><span>Auth issue</span><strong>${escapeHtml(status.error)}</strong></div>` : ""}
     <div class="auth-status-row"><span>Mode</span><strong>Draft-safe only</strong></div>
     ${status.expires_at ? `<small>Token expires: ${escapeHtml(new Date(status.expires_at).toLocaleString())}</small>` : `<small>Connect Etsy to pull live seller listings.</small>`}
   `;

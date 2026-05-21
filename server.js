@@ -40,6 +40,10 @@ const ETSY_API_BASE = "https://api.etsy.com/v3/application";
 const ETSY_API_FALLBACK_BASE = "https://openapi.etsy.com/v3/application";
 const FALLBACK_SHOP_NAME = (process.env.ETSY_SHOP_NAME || shopUrl.split("/shop/")[1] || "").trim();
 const FALLBACK_SHOP_URL = (process.env.ETSY_SHOP_URL || shopUrl).trim();
+const ETSY_ACCESS_TOKEN_ENV = (process.env.ETSY_ACCESS_TOKEN || "").trim();
+const ETSY_REFRESH_TOKEN_ENV = (process.env.ETSY_REFRESH_TOKEN || "").trim();
+const ETSY_TOKEN_EXPIRES_AT_ENV = (process.env.ETSY_TOKEN_EXPIRES_AT || "").trim();
+const ETSY_SHOP_ID_ENV = (process.env.ETSY_SHOP_ID || "").trim();
 const FREE_OPTIMIZATION_LIMIT = 15;
 const ETSY_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const PLAN_CREDITS = {
@@ -730,7 +734,38 @@ function normalizeListing(listing = {}) {
 }
 
 async function readEtsyTokens() {
-  return readRuntimeJson(etsyTokensPath, etsyTokensSeedPath, {});
+  const stored = await readRuntimeJson(etsyTokensPath, etsyTokensSeedPath, {});
+  if (stored.access_token || stored.refresh_token) return stored;
+  const envExpiresAt = ETSY_TOKEN_EXPIRES_AT_ENV ? Number(ETSY_TOKEN_EXPIRES_AT_ENV) : 0;
+  const envTokens = {
+    access_token: ETSY_ACCESS_TOKEN_ENV,
+    refresh_token: ETSY_REFRESH_TOKEN_ENV,
+    token_type: "Bearer",
+    scope: ETSY_SCOPES,
+    expires_at: Number.isFinite(envExpiresAt) && envExpiresAt > 0 ? envExpiresAt : 0,
+    shop_id: ETSY_SHOP_ID_ENV,
+    shop_name: FALLBACK_SHOP_NAME,
+    shop_url: FALLBACK_SHOP_URL,
+    source: "environment"
+  };
+  if (envTokens.access_token || envTokens.refresh_token) {
+    etsyDebug("Etsy auth loaded", {
+      source: "environment",
+      hasAccessToken: Boolean(envTokens.access_token),
+      hasRefreshToken: Boolean(envTokens.refresh_token),
+      shop_id: envTokens.shop_id || "",
+      shop_name: envTokens.shop_name || ""
+    });
+    return envTokens;
+  }
+  etsyDebug("Etsy auth loaded", {
+    source: "none",
+    hasAccessToken: false,
+    hasRefreshToken: false,
+    shop_id: "",
+    shop_name: ""
+  });
+  return {};
 }
 
 async function writeEtsyTokens(tokens) {
@@ -758,6 +793,9 @@ function etsyTokenUsable(tokens = {}) {
 
 async function etsyTokenStatus() {
   let tokens = await readEtsyTokens();
+  if (!etsyConfigured()) etsyDebug("Missing Etsy config", { hasClientId: Boolean(ETSY_CLIENT_ID), hasRedirectUri: Boolean(ETSY_REDIRECT_URI) });
+  if (!tokens.access_token) etsyDebug("Missing Etsy access token", { hasRefreshToken: Boolean(tokens.refresh_token) });
+  if (!tokens.refresh_token) etsyDebug("Missing Etsy refresh token", { hasAccessToken: Boolean(tokens.access_token) });
   const connected = Boolean(tokens.access_token || tokens.refresh_token);
   const expired = connected && !etsyTokenUsable(tokens);
   if (connected && !expired && (!tokens.shop_id || !tokens.shop_name)) {
@@ -770,6 +808,13 @@ async function etsyTokenStatus() {
   const meta = await readListingsMeta();
   const fallbackShopName = tokens.shop_name || meta.shop_name || FALLBACK_SHOP_NAME;
   const fallbackShopUrl = tokens.shop_url || meta.shop_url || FALLBACK_SHOP_URL;
+  if (connected && (tokens.shop_id || meta.shop_id || fallbackShopName)) {
+    etsyDebug("Loaded Etsy shop", {
+      shop_id: tokens.shop_id || meta.shop_id || "",
+      shop_name: fallbackShopName || "",
+      shop_url: fallbackShopUrl || ""
+    });
+  }
   return {
     configured: etsyConfigured(),
     connected,
@@ -781,6 +826,8 @@ async function etsyTokenStatus() {
     expires_at: tokens.expires_at ? new Date(tokens.expires_at).toISOString() : "",
     reconnect_required: connected && expired && !tokens.refresh_token,
     token_status: tokens.last_refresh_status || (connected && !expired ? "active" : expired ? "reconnect_required" : "not_connected"),
+    source: tokens.source || (connected ? "runtime" : "none"),
+    error: !etsyConfigured() ? "missing_etsy_config" : !tokens.access_token ? "missing_etsy_access_token" : !tokens.refresh_token ? "missing_etsy_refresh_token" : "",
     draft_safe: true
   };
 }
