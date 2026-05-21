@@ -1457,14 +1457,41 @@ app.post("/api/make-response", async (req, res) => {
   const optimized = validated.value;
   const listings = await readListingsCache();
   const incomingListingId = normalizeListingId(optimized.listing_id);
-  const listing = listings.find((item) => {
+  let listing = listings.find((item) => {
     const storedListingId = normalizeListingId(item.listing_id || item.id);
     return storedListingId === incomingListingId;
   });
-  if (!listing) {
-    res.status(404).json(errorResponse("listing_not_found", "Listing not found"));
-    return;
+  const created = !listing;
+  if (listing) {
+    Object.assign(listing, normalizeListing({
+      ...listing,
+      listing_id: incomingListingId,
+      title: optimized.current_title || listing.title || optimized.seo_title,
+      description: optimized.current_description || listing.description || "",
+      tags: Array.isArray(optimized.current_tags) ? optimized.current_tags : listing.tags,
+      image_url: optimized.image_url || optimized.thumbnail_preview_url || listing.image_url,
+      sync_source: listing.sync_source || "make_callback",
+      details_status: listing.details_status || "callback_merged"
+    }));
+  } else {
+    listing = normalizeListing({
+      listing_id: incomingListingId,
+      name: optimized.product_name || optimized.listing_name || optimized.seo_title || `Listing ${incomingListingId}`,
+      type: optimized.product_type || inferType(optimized.seo_title || ""),
+      style: optimized.style || inferStyle(optimized.seo_title || "", optimized.tags),
+      title: optimized.current_title || optimized.seo_title || `Listing ${incomingListingId}`,
+      description: optimized.current_description || "",
+      tags: Array.isArray(optimized.current_tags) ? optimized.current_tags : [],
+      image_url: optimized.image_url || optimized.thumbnail_preview_url || optimized.hero_thumbnail_url || "",
+      source_url: optimized.source_url || (incomingListingId ? `https://www.etsy.com/listing/${incomingListingId}` : ""),
+      state: "draft_callback",
+      details_status: "created_from_make_callback",
+      sync_source: "make_callback",
+      optimization_focus: "Hero thumbnail generation and Etsy CTR optimization"
+    });
+    listings.unshift(listing);
   }
+  await writeListingsCache(listings, { source: "make_callback", last_listing_id: incomingListingId });
 
   const record = await createOptimizationRecord({
     listing,
@@ -1472,7 +1499,13 @@ app.post("/api/make-response", async (req, res) => {
     source: "make_callback"
   });
   await incrementAnalytics("optimization_completed");
-  res.json(successResponse(record, "Make response accepted"));
+  res.json(successResponse({
+    ...record,
+    created,
+    updated: !created,
+    auto_publish: false,
+    publish_mode: "draft_only"
+  }, created ? "Make response accepted and listing created" : "Make response accepted and listing updated"));
 });
 
 app.post("/api/test-make-response", async (_req, res) => {
