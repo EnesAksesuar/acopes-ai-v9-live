@@ -1458,6 +1458,13 @@ app.post("/api/retry/:id", async (req, res) => {
 
 app.post("/api/make-response", async (req, res) => {
   if (!isAuthorizedMakeResponse(req)) {
+    console.log("MAKE webhook auth debug", {
+      hasEnvSecret: Boolean(process.env.MAKE_RESPONSE_SECRET),
+      envLength: process.env.MAKE_RESPONSE_SECRET ? process.env.MAKE_RESPONSE_SECRET.length : 0,
+      hasHeaderSecret: Boolean(req.headers["x-acopes-webhook-secret"]),
+      headerLength: req.headers["x-acopes-webhook-secret"] ? String(req.headers["x-acopes-webhook-secret"]).length : 0,
+      headerKeys: Object.keys(req.headers)
+    });
     res.status(401).json({ success: false, error: "unauthorized_webhook" });
     return;
   }
