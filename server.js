@@ -592,6 +592,22 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
   };
 }
 
+function buildOptimizationResponsePayload(product = {}, log = {}, session = {}) {
+  const optimized = ensureOptimizationContent(
+    normalizeOptimization(log.optimization_record?.after || log.make_response?.parsed || log.make_response?.body || {}),
+    product
+  );
+  return {
+    ...log,
+    optimized_title: optimized.optimized_title,
+    seo_title: optimized.seo_title,
+    optimized_description: optimized.optimized_description,
+    optimized_tags: optimized.optimized_tags,
+    analysis: scoreOptimization(optimized),
+    session
+  };
+}
+
 function scoreOptimization(optimized = {}, scoreOverrides = {}) {
   const title = optimized.seo_title || "";
   const description = optimized.description || "";
@@ -1593,32 +1609,16 @@ app.post("/api/send", async (req, res) => {
     res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
   }
-  if (!devMode && user.credits_remaining < 1) {
-    res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
-    return;
-  }
-  if (!WEBHOOK_URL) {
-    res.status(503).json(errorResponse("make_webhook_not_configured", "Make webhook is not configured.", {
-      error: "make_webhook_not_configured",
-      message: "Make webhook is not configured.",
-      session: sessionSummary(req.session, user, { dev_mode: devMode })
-    }));
-    return;
-  }
+  const creditBlocked = !devMode && user.credits_remaining < 1;
   await incrementAnalytics("optimization_started");
   const log = await sendToMake(req.body.product);
-  const updatedUser = !devMode && log.status === "completed" ? await consumeCredits(user, 1) : user;
-  const responseBody = (log.status === "completed" ? successResponse : errorResponse)(
-    log.status === "completed" ? {
-    ...log,
-    optimized_title: log.optimized_title || log.seo_title || fallbackOptimizedTitle(req.body.product),
-    session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
-    } : "make_request_failed",
-    log.status === "completed" ? "Optimization queued" : "Optimization request failed.",
-    log.status === "completed" ? undefined : { ...log, session: sessionSummary(req.session, updatedUser, { dev_mode: devMode }) }
+  const updatedUser = !devMode && !creditBlocked && log.status === "completed" ? await consumeCredits(user, 1) : user;
+  const responseBody = successResponse(
+    buildOptimizationResponsePayload(req.body.product, { ...log, credit_blocked: creditBlocked }, sessionSummary(req.session, updatedUser, { dev_mode: devMode })),
+    log.status === "completed" ? "Optimization queued" : "Optimization generated with fallback"
   );
   console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
-  res.status(log.status === "completed" ? 200 : 502).json(responseBody);
+  res.status(200).json(responseBody);
 });
 
 app.post("/api/send-batch", async (req, res) => {
