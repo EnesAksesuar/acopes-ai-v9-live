@@ -139,17 +139,11 @@ function publicEtsyAuth(tokens = {}) {
 }
 
 function readEtsyAuthCookie(req) {
-  const raw = parseCookies(req.headers.cookie || "").acopes_etsy_auth;
-  if (!raw) return {};
-  try {
-    return base64UrlDecode(raw);
-  } catch {
-    return {};
-  }
+  return {};
 }
 
 function setEtsyAuthCookie(res, tokens = {}) {
-  appendSetCookie(res, `acopes_etsy_auth=${encodeURIComponent(base64UrlEncode(publicEtsyAuth(tokens)))}; ${authCookieOptions()}`);
+  clearEtsyAuthCookie(res);
 }
 
 function clearEtsyAuthCookie(res) {
@@ -167,9 +161,7 @@ function clearOauthCookies(res) {
 
 async function persistEtsyAuth(res, tokens = {}) {
   const auth = publicEtsyAuth(tokens);
-  globalThis.etsyAuthStore = auth;
-  await writeEtsyTokens(auth);
-  setEtsyAuthCookie(res, auth);
+  clearEtsyAuthCookie(res);
   return auth;
 }
 
@@ -213,9 +205,26 @@ app.use(async (req, _res, next) => {
     return;
   }
   req.user = await getSessionUser(req.session);
-  req.etsyAuth = req.user?.etsy_auth || readEtsyAuthCookie(req);
+  req.etsyAuth = req.user?.etsy_auth || {};
   next();
 });
+
+function requireUser(req, res, next) {
+  if (req.session?.email) {
+    next();
+    return;
+  }
+  res.status(401).json({ success: false, error: "login_required", message: "Login required." });
+}
+
+function sessionEmail(req) {
+  return normalizeEmail(req.session?.email || req.user?.email || "");
+}
+
+function belongsToSessionEmail(item = {}, req) {
+  const email = sessionEmail(req);
+  return Boolean(email && normalizeEmail(item.email) === email);
+}
 
 async function ensureLogsFile() {
   try {
@@ -386,6 +395,14 @@ async function saveUserEtsyAuth(session, tokens = {}) {
     shop_id: publicEtsyAuth(tokens).shop_id || "",
     hasAccessToken: Boolean(tokens.access_token)
   });
+  console.log("[USERS JSON CHECK]", {
+    email,
+    user_created_or_found: Boolean(user),
+    etsy_auth_present: Boolean(updated?.etsy_auth),
+    access_token_saved: Boolean(updated?.etsy_auth?.access_token),
+    shop_id: updated?.etsy_auth?.shop_id || "",
+    user_id: updated?.etsy_auth?.user_id || ""
+  });
   return updated;
 }
 
@@ -495,6 +512,42 @@ function clampScore(value) {
   return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
 }
 
+function titleCaseWords(value = "") {
+  return String(value || "")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+}
+
+function normalizeStem(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((word) => word.replace(/ies$/, "y").replace(/s$/, ""))
+    .join(" ");
+}
+
+function countRootUses(text = "") {
+  return String(text || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 2)
+    .reduce((counts, word) => {
+      const stem = word.replace(/ies$/, "y").replace(/s$/, "");
+      counts[stem] = (counts[stem] || 0) + 1;
+      return counts;
+    }, {});
+}
+
+function textIncludesAny(text = "", words = []) {
+  const lower = String(text || "").toLowerCase();
+  return words.find((word) => lower.includes(word)) || "";
+}
+
 function normalizeListingId(value = "") {
   return String(value ?? "").trim();
 }
@@ -559,12 +612,14 @@ function isAuthorizedMakeResponse(req) {
 
 function buildPayload(product) {
   const detectedProductType = detectJewelryProductType(product);
+  const optimizationMode = optimizationModeFrom(product);
   return {
     product_name: product.name,
     product_type: detectedProductType || product.type,
     detected_product_type: detectedProductType,
     strict_jewelry_taxonomy: true,
-    ai_system_rule: "Never change the original jewelry product category.",
+    optimization_mode: optimizationMode,
+    ai_system_rule: "CRITICAL: The optimized title MUST contain the exact same product type as the original. If original contains 'necklace', output MUST contain 'necklace'. Never change necklace→ring, bracelet→necklace, earring→pendant. Product type is LOCKED.",
     style: product.style,
     target_market: "USA",
     brand: "Edel Luxe",
@@ -640,29 +695,39 @@ function normalizeOptimization(input = {}) {
   };
 }
 
-const JEWELRY_PRODUCT_TYPES = ["necklace", "ring", "bracelet", "earrings", "pendant", "anklet", "choker"];
+const JEWELRY_PRODUCT_TYPES = ["necklace", "bracelet", "ring", "earring", "pendant", "anklet", "brooch", "choker", "chain", "bangle", "cuff"];
+const PRODUCT_TYPE_PATTERNS = [
+  ["necklace", /\bnecklaces?\b|\bchain necklace\b|\bpendant necklace\b/i],
+  ["bracelet", /\bbracelets?\b/i],
+  ["ring", /\brings?\b/i],
+  ["earring", /\bearrings?\b/i],
+  ["pendant", /\bpendants?\b/i],
+  ["anklet", /\banklets?\b/i],
+  ["brooch", /\bbrooch(?:es)?\b/i],
+  ["choker", /\bchokers?\b/i],
+  ["bangle", /\bbangles?\b/i],
+  ["cuff", /\bcuffs?\b/i],
+  ["chain", /\bchains?\b/i]
+];
+
+function detectProductTypeFromText(text = "") {
+  const normalized = String(text || "");
+  const match = PRODUCT_TYPE_PATTERNS.find(([, pattern]) => pattern.test(normalized));
+  if (!match) return "";
+  return match[0] === "chain" && /\bnecklace\b/i.test(normalized) ? "necklace" : match[0];
+}
 
 function detectJewelryProductType(listing = {}) {
-  const text = `${listing.product_type || ""} ${listing.type || ""} ${listing.title || ""} ${listing.name || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
-  const patterns = [
-    ["chain necklace", "necklace"],
-    ["pendant necklace", "necklace"],
-    ["necklace", "necklace"],
-    ["choker", "choker"],
-    ["earrings", "earrings"],
-    ["earring", "earrings"],
-    ["bracelet", "bracelet"],
-    ["anklet", "anklet"],
-    ["pendant", "pendant"],
-    ["ring", "ring"]
-  ];
-  return patterns.find(([pattern]) => new RegExp(`\\b${pattern}\\b`, "i").test(text))?.[1] || "";
+  const originalTitleType = detectProductTypeFromText(listing.title || listing.name || "");
+  if (originalTitleType) return originalTitleType;
+  return detectProductTypeFromText(`${listing.product_type || ""} ${listing.type || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`);
 }
 
 function productTypeTerms(type = "") {
   const normalized = String(type || "").toLowerCase();
   if (normalized === "necklace") return ["necklace", "chain necklace", "pendant necklace"];
-  if (normalized === "earrings") return ["earrings", "earring"];
+  if (normalized === "earring") return ["earring", "earrings"];
+  if (normalized === "chain") return ["chain"];
   return normalized ? [normalized] : [];
 }
 
@@ -675,6 +740,242 @@ function originalKeywords(listing = {}) {
     .filter((word) => word.length > 3 && !blocked.has(word))));
 }
 
+const MATERIAL_KEYWORDS = ["gold", "silver", "pearl", "gemstone", "crystal", "stainless steel", "rose gold", "beaded"];
+const STYLE_KEYWORDS = ["chunky", "minimalist", "dainty", "bohemian", "boho", "vintage", "figaro", "paperclip", "herringbone", "box chain", "layering", "old money"];
+const GIFT_KEYWORDS = ["gift for her", "gift for mom", "bridesmaid gift", "jewelry gift"];
+const OCCASION_KEYWORDS = ["wedding", "birthday", "christmas", "anniversary", "bridesmaid"];
+const FILLER_WORDS = ["beautiful", "lovely", "amazing", "unique"];
+const TRANSACTIONAL_WORDS = ["gift", "everyday", "layering", "bridal", "bridesmaid", "birthday", "wedding", "anniversary"];
+const POWER_WORDS = ["timeless", "elegant", "refined", "delicate", "polished", "luxury", "gift"];
+
+function optimizationModeFrom(input = {}) {
+  const mode = String(input.optimization_mode || input.mode || "safe_seo").toLowerCase();
+  return ["safe_seo", "aggressive_ctr", "luxury_branding", "gift_intent", "minimalist_jewelry"].includes(mode) ? mode : "safe_seo";
+}
+
+function keywordClusters(listing = {}, mode = "safe_seo") {
+  const text = `${listing.title || ""} ${listing.name || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
+  const productType = detectJewelryProductType(listing) || "necklace";
+  const material = textIncludesAny(text, MATERIAL_KEYWORDS) || "gold";
+  const style = textIncludesAny(text, STYLE_KEYWORDS) || (mode === "luxury_branding" ? "old money" : mode === "minimalist_jewelry" ? "minimalist" : "dainty");
+  const occasion = textIncludesAny(text, OCCASION_KEYWORDS) || (mode === "gift_intent" ? "birthday" : "everyday");
+  const gift = textIncludesAny(text, GIFT_KEYWORDS) || (mode === "gift_intent" ? "gift for her" : "jewelry gift");
+  const productPhrase = productType === "earrings" ? "earrings" : productType;
+  const primary = [material, style, productPhrase].filter(Boolean).join(" ").replace(/\bold money\b/, "old money");
+  const secondary = text.includes("chain") || ["necklace", "choker"].includes(productType)
+    ? "layering jewelry"
+    : mode === "luxury_branding"
+      ? "quiet luxury jewelry"
+      : "everyday jewelry";
+  return {
+    primary_keyword: primary,
+    secondary_keyword: secondary,
+    material_keyword: material,
+    style_keyword: style,
+    gift_keyword: gift,
+    occasion_keyword: occasion,
+    product_type: productType
+  };
+}
+
+function ensureTitleProductType(title = "", productType = "") {
+  if (!productType) return title;
+  const lower = String(title || "").toLowerCase();
+  if (productTypeTerms(productType).some((term) => lower.includes(term))) return title;
+  const parts = String(title || "").split(",");
+  parts[0] = `${parts[0].trim()} ${titleCaseWords(productType)}`.trim();
+  return compactTitle(parts.join(","), 140);
+}
+
+function productTypeTitleWord(type = "") {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "earring") return "Earrings";
+  if (normalized === "necklace") return "Necklace";
+  if (normalized === "bracelet") return "Bracelet";
+  if (normalized === "ring") return "Ring";
+  if (normalized === "pendant") return "Pendant";
+  if (normalized === "anklet") return "Anklet";
+  if (normalized === "brooch") return "Brooch";
+  if (normalized === "choker") return "Choker";
+  if (normalized === "chain") return "Chain";
+  if (normalized === "bangle") return "Bangle";
+  if (normalized === "cuff") return "Cuff";
+  return titleCaseWords(normalized);
+}
+
+function productTypeReplacementPattern(type = "") {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "earring") return /\bearrings?\b/gi;
+  if (normalized === "brooch") return /\bbrooch(?:es)?\b/gi;
+  return new RegExp(`\\b${normalized}s?\\b`, "gi");
+}
+
+function enforceLockedProductTypeInTitle(title = "", originalType = "") {
+  if (!title || !originalType) return title;
+  const requiredTerms = productTypeTerms(originalType);
+  const requiredWord = productTypeTitleWord(originalType);
+  let fixedTitle = String(title || "");
+  const hasRequiredType = requiredTerms.some((term) => new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}s?\\b`, "i").test(fixedTitle));
+
+  for (const type of JEWELRY_PRODUCT_TYPES) {
+    if (type === originalType) continue;
+    if (originalType === "necklace" && type === "chain") continue;
+    const pattern = productTypeReplacementPattern(type);
+    if (pattern.test(fixedTitle)) {
+      fixedTitle = fixedTitle.replace(productTypeReplacementPattern(type), requiredWord);
+    }
+  }
+
+  if (!hasRequiredType && !productTypeTerms(originalType).some((term) => new RegExp(`\\b${term.replace(/\s+/g, "\\s+")}s?\\b`, "i").test(fixedTitle))) {
+    const parts = fixedTitle.split(",");
+    parts[0] = `${parts[0].trim()} ${requiredWord}`.trim();
+    fixedTitle = parts.join(",");
+  }
+
+  fixedTitle = compactTitle(fixedTitle.replace(/\b(Necklace|Bracelet|Ring|Earrings|Pendant|Anklet|Brooch|Choker|Chain|Bangle|Cuff)\s+\1\b/gi, "$1"), 140);
+  if (fixedTitle !== title) {
+    console.log("[PRODUCT TYPE ENFORCED]", `${originalType} → ${fixedTitle}`);
+  }
+  return fixedTitle;
+}
+
+function enforceOptimizationProductType(optimized = {}, listing = {}) {
+  const originalType = detectJewelryProductType(listing);
+  if (!originalType) return optimized;
+  const currentTitle = optimized.seo_title || optimized.optimized_title || "";
+  const fixedTitle = enforceLockedProductTypeInTitle(currentTitle, originalType);
+  return {
+    ...optimized,
+    seo_title: fixedTitle,
+    optimized_title: fixedTitle
+  };
+}
+
+function keyFeatureFromListing(listing = {}, clusters = {}) {
+  const text = `${listing.title || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
+  if (text.includes("chunky")) return "Bold chain texture adds visible shine without changing the necklace category.";
+  if (text.includes("figaro")) return "Figaro links create a polished layered look.";
+  if (text.includes("paperclip")) return "Paperclip links give the piece a modern layering profile.";
+  if (text.includes("heart")) return "The heart detail adds soft meaning for everyday gifting.";
+  if (text.includes("pearl")) return "Pearl detail adds a refined feminine finish.";
+  return `Designed for ${clusters.secondary_keyword || "everyday styling"} with a refined ${clusters.style_keyword || "minimalist"} finish.`;
+}
+
+function fallbackDescription(listing = {}, clusters = {}) {
+  const location = listing.location || listing.shop_location || listing.ships_from || "";
+  const sentence = `${titleCaseWords(clusters.product_type)} in ${clusters.material_keyword}, ${clusters.style_keyword} design. Perfect ${clusters.occasion_keyword} gift. ${keyFeatureFromListing(listing, clusters)}${location ? ` Ships from ${location}.` : ""}`;
+  return sentence.split(/\s+/).slice(0, 150).join(" ");
+}
+
+function productTitleLabel(listing = {}, clusters = {}) {
+  const productType = clusters.product_type || detectJewelryProductType(listing) || "jewelry";
+  const text = `${listing.title || ""} ${listing.name || ""}`.toLowerCase();
+  if (productType === "necklace" && text.includes("chain")) return "Chain Necklace";
+  if (productType === "necklace" && text.includes("pendant")) return "Pendant Necklace";
+  if (productType === "bracelet" && text.includes("bangle")) return "Bangle Bracelet";
+  if (productType === "earring") return "Earrings";
+  return titleCaseWords(productType);
+}
+
+function compactTitle(value = "", maxLength = 140) {
+  let title = String(value || "").replace(/\s+/g, " ").trim();
+  for (const filler of FILLER_WORDS) title = title.replace(new RegExp(`\\b${filler}\\b`, "ig"), "").replace(/\s+/g, " ").trim();
+  const counts = {};
+  title = title.split(/\s+/).filter((word) => {
+    const stem = normalizeStem(word);
+    counts[stem] = (counts[stem] || 0) + 1;
+    return counts[stem] <= 2;
+  }).join(" ");
+  if (title.length <= maxLength) return title;
+  return title.slice(0, maxLength).replace(/[,\s|]+[^,\s|]*$/, "").trim();
+}
+
+function buildSeoTitle(listing = {}, mode = "safe_seo") {
+  const clusters = keywordClusters(listing, mode);
+  const material = titleCaseWords(clusters.material_keyword);
+  const style = titleCaseWords(clusters.style_keyword);
+  const product = productTitleLabel(listing, clusters);
+  const useCase = mode === "gift_intent"
+    ? `${titleCaseWords(clusters.occasion_keyword)} Ready Jewelry`
+    : mode === "luxury_branding"
+      ? "Quiet Luxury Styling"
+      : mode === "aggressive_ctr"
+        ? "Everyday Statement Layering"
+        : "Minimalist Layering Jewelry";
+  const gift = mode === "luxury_branding" ? "Refined Gift for Her" : titleCaseWords(clusters.gift_keyword);
+  const title = `${material} ${style} ${product}, ${useCase} | ${gift}`;
+  return compactTitle(title, 140);
+}
+
+function addTag(tags, tag) {
+  const cleaned = String(tag || "").toLowerCase().replace(/[^a-z0-9\s]/g, " ").replace(/\s+/g, " ").trim();
+  if (!cleaned || cleaned.length > 20) return tags;
+  const normalized = normalizeStem(cleaned);
+  if (tags.some((item) => normalizeStem(item) === normalized)) return tags;
+  tags.push(cleaned);
+  return tags;
+}
+
+function generateEtsyTags(listing = {}, mode = "safe_seo") {
+  const clusters = keywordClusters(listing, mode);
+  const tags = [];
+  addTag(tags, clusters.product_type);
+  addTag(tags, clusters.material_keyword);
+  addTag(tags, clusters.style_keyword);
+  addTag(tags, `${clusters.material_keyword} ${clusters.product_type}`);
+  addTag(tags, `${clusters.style_keyword} style`);
+  addTag(tags, "layering piece");
+  addTag(tags, "everyday wear");
+  addTag(tags, "quiet luxury");
+  addTag(tags, clusters.gift_keyword);
+  addTag(tags, `${clusters.occasion_keyword} gift`);
+  addTag(tags, "bridesmaid gift");
+  addTag(tags, "old money style");
+  addTag(tags, mode === "aggressive_ctr" ? "coquette style" : "timeless jewelry");
+  for (const fallback of ["dainty jewelry", "minimal jewelry", "elegant jewelry", "gift for her", "wedding jewelry", "birthday gift", "gold jewelry"]) {
+    if (tags.length >= 13) break;
+    addTag(tags, fallback);
+  }
+  return tags.slice(0, 13);
+}
+
+function complianceChecks(title = "", tags = [], clusters = {}) {
+  const lowerTitle = String(title || "").toLowerCase();
+  const rootCounts = countRootUses(title);
+  const duplicateTags = tags.length !== new Set(tags.map(normalizeStem)).size;
+  const primary = clusters.primary_keyword || clusters.product_type || "";
+  return {
+    title_too_long: title.length > 140,
+    keyword_spam: Object.values(rootCounts).some((count) => count >= 3),
+    no_primary_keyword: !lowerTitle.slice(0, 40).includes(String(primary).split(/\s+/).filter(Boolean).at(-1) || ""),
+    duplicate_tags: duplicateTags,
+    missing_material: !MATERIAL_KEYWORDS.some((word) => lowerTitle.includes(word)),
+    mobile_fail: !lowerTitle.slice(0, 40).includes(clusters.product_type || "")
+  };
+}
+
+function confidenceBreakdown(scores = {}, optimized = {}) {
+  const checks = optimized.compliance_checks || {};
+  const tags = optimized.tags || [];
+  const clusters = optimized.keyword_clusters || {};
+  const title = optimized.seo_title || "";
+  const titleQuality = title.length >= 40 && title.length <= 140 && !FILLER_WORDS.some((word) => title.toLowerCase().includes(word));
+  const tagQuality = tags.length === 13 && !checks.duplicate_tags;
+  const keywordCarryover = title.toLowerCase().includes((clusters.product_type || "").toLowerCase()) && tags.some((tag) => tag.includes(clusters.product_type || ""));
+  const taxonomyValid = optimized.taxonomy_validation?.valid !== false || (optimized.taxonomy_validation?.category_preserved && optimized.taxonomy_validation?.title_category_preserved && !optimized.taxonomy_validation?.mismatched_type);
+  const breakdown = {
+    taxonomy_valid: taxonomyValid ? 20 : 0,
+    keyword_carryover: keywordCarryover ? 20 : 0,
+    title_quality: titleQuality ? 20 : 0,
+    tag_quality: tagQuality ? 20 : 0,
+    ctr_prediction: scores.ctr_score > 85 ? 20 : scores.ctr_score > 70 ? 10 : 0
+  };
+  return {
+    ...breakdown,
+    confidence_score: Object.values(breakdown).reduce((sum, value) => sum + value, 0)
+  };
+}
+
 function carriedKeywordCount(listing = {}, title = "") {
   const lowerTitle = String(title || "").toLowerCase();
   return originalKeywords(listing).filter((word) => lowerTitle.includes(word)).length;
@@ -683,28 +984,51 @@ function carriedKeywordCount(listing = {}, title = "") {
 function validateJewelryOptimization(optimized = {}, listing = {}) {
   const detectedProductType = detectJewelryProductType(listing);
   const title = String(optimized.seo_title || optimized.optimized_title || "").toLowerCase();
+  const optimizedTitleType = detectProductTypeFromText(title);
   const description = String(optimized.description || optimized.optimized_description || "").toLowerCase();
   const tags = (optimized.tags || optimized.optimized_tags || []).map((tag) => String(tag).toLowerCase());
   const requiredTerms = productTypeTerms(detectedProductType);
   const productText = `${title} ${description} ${tags.join(" ")}`;
   const categoryPreserved = !requiredTerms.length || requiredTerms.some((term) => productText.includes(term));
   const titleCategoryPreserved = !requiredTerms.length || requiredTerms.some((term) => title.includes(term));
-  const mismatchedType = JEWELRY_PRODUCT_TYPES.some((type) => {
+  const detectedMatchesOriginal = detectJewelryProductType(listing) === detectedProductType;
+  const rawMismatchedType = JEWELRY_PRODUCT_TYPES.some((type) => {
     if (!detectedProductType || type === detectedProductType) return false;
     return productTypeTerms(type).some((term) => title.includes(term));
   });
+  const hardTypeSwap = optimizedTitleType && detectedProductType && optimizedTitleType !== detectedProductType && !(detectedProductType === "necklace" && optimizedTitleType === "pendant");
+  const mismatchedType = categoryPreserved && titleCategoryPreserved && detectedMatchesOriginal && !hardTypeSwap ? false : rawMismatchedType || hardTypeSwap;
   const carryOver = carriedKeywordCount(listing, title);
   const genericTitle = /minimal everyday jewelry|gold minimal ring|minimal ring/i.test(optimized.seo_title || optimized.optimized_title || "");
-  const valid = Boolean(title) && categoryPreserved && titleCategoryPreserved && !mismatchedType && !genericTitle && carryOver >= Math.min(2, originalKeywords(listing).length || 2);
+  const requiredCarryover = Math.min(1, originalKeywords(listing).length || 1);
+  const valid = Boolean(title) && categoryPreserved && titleCategoryPreserved && !mismatchedType && !genericTitle && carryOver >= requiredCarryover;
+  const failReasons = [
+    !title ? "missing_title" : "",
+    !categoryPreserved ? "category_not_preserved_in_content" : "",
+    !titleCategoryPreserved ? "category_not_preserved_in_title" : "",
+    mismatchedType ? "mismatched_product_type" : "",
+    genericTitle ? "generic_or_blocked_title" : "",
+    carryOver < requiredCarryover ? "insufficient_keyword_carryover" : ""
+  ].filter(Boolean);
   const result = {
     valid,
     detected_product_type: detectedProductType,
+    expected_type: detectedProductType,
     category_preserved: categoryPreserved,
     title_category_preserved: titleCategoryPreserved,
     mismatched_type: mismatchedType,
     carried_keywords: carryOver,
-    generic_title: genericTitle
+    generic_title: genericTitle,
+    fail_reasons: failReasons
   };
+  console.log("[TAXONOMY CHECK]", {
+    detected_product_type: detectedProductType,
+    expected_type: detectedProductType,
+    pass: valid
+  });
+  if (!valid) {
+    console.log("[VALIDATION FAIL REASON]", failReasons);
+  }
   console.log("[OPTIMIZATION DEBUG]", {
     detected_product_type: detectedProductType,
     validation_result: result,
@@ -735,20 +1059,22 @@ function enforceProductTypeInContent(candidate = {}, detectedProductType = "") {
 }
 
 function fallbackOptimizedTitle(listing = {}) {
-  const text = `${listing.title || listing.name || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
-  const material = text.includes("pearl") ? "Pearl" : text.includes("silver") ? "Silver" : "Gold";
-  const detectedType = detectJewelryProductType(listing) || "necklace";
-  const type = detectedType === "earrings" ? "Earrings" : detectedType.charAt(0).toUpperCase() + detectedType.slice(1);
-  const style = text.includes("herringbone") ? "Herringbone Chain" : text.includes("paperclip") ? "Paperclip Chain" : text.includes("heart") ? "Heart" : text.includes("box") ? "Box Chain" : text.includes("chain") ? "Chain" : "Minimal";
-  return `${material} ${style} ${type}, Minimal Layering Jewelry`;
+  return buildSeoTitle(listing, optimizationModeFrom(listing));
 }
 
 function ensureOptimizationContent(optimized = {}, listing = {}) {
   const detectedProductType = detectJewelryProductType(listing);
-  let finalOutputSource = optimized.final_output_source || "ai_valid";
-  let title = optimized.seo_title || optimized.optimized_title || fallbackOptimizedTitle(listing);
-  let tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : ["minimal jewelry", `${detectedProductType || "necklace"}`, "gift for her", "dainty jewelry", `everyday ${detectedProductType || "necklace"}`, "layering necklace", "quiet luxury"];
-  let description = optimized.description || optimized.optimized_description || `${title} designed for minimalist Etsy styling, everyday wear, and gift-ready jewelry positioning.`;
+  const optimizationMode = optimizationModeFrom(listing);
+  const clusters = keywordClusters(listing, optimizationMode);
+  let finalOutputSource = optimized.final_output_source || "ai";
+  optimized = enforceOptimizationProductType(optimized, listing);
+  let title = enforceLockedProductTypeInTitle(
+    ensureTitleProductType(compactTitle(optimized.seo_title || optimized.optimized_title || fallbackOptimizedTitle({ ...listing, optimization_mode: optimizationMode })), clusters.product_type),
+    detectedProductType
+  );
+  let tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : generateEtsyTags(listing, optimizationMode);
+  tags = tags.length === 13 ? tags : generateEtsyTags({ ...listing, tags }, optimizationMode);
+  let description = optimized.description || optimized.optimized_description || `${title} is optimized for ${clusters.secondary_keyword}, mobile-first Etsy search, and draft-safe buyer intent. It preserves the original ${clusters.product_type} category while highlighting ${clusters.material_keyword}, ${clusters.style_keyword}, and ${clusters.gift_keyword}.`;
   let candidate = {
     ...optimized,
     seo_title: title,
@@ -756,30 +1082,24 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
     description,
     optimized_description: description,
     tags,
-    optimized_tags: tags
+    optimized_tags: tags,
+    keyword_clusters: clusters,
+    optimization_mode: optimizationMode,
+    compliance_checks: complianceChecks(title, tags, clusters)
   };
   candidate = enforceProductTypeInContent(candidate, detectedProductType);
   const validation = validateJewelryOptimization(candidate, listing);
   if (!validation.valid) {
+    console.log("[FALLBACK TRIGGER]", {
+      stage: "ensure_optimization_content",
+      condition: "validation_failed",
+      fail_reasons: validation.fail_reasons || [],
+      optimized_title: candidate.seo_title || candidate.optimized_title || ""
+    });
     finalOutputSource = "safe_fallback";
-    title = fallbackOptimizedTitle(listing);
-    const typeTerm = detectedProductType || "necklace";
-    tags = Array.from(new Set([
-      `${typeTerm}`,
-      `gold ${typeTerm}`,
-      `dainty ${typeTerm}`,
-      `everyday ${typeTerm}`,
-      "quiet luxury",
-      "gift for her",
-      "minimal jewelry",
-      "layering necklace",
-      "birthday gift",
-      "bridesmaid gift",
-      "timeless jewelry",
-      "old money style",
-      "elegant jewelry"
-    ])).slice(0, 13);
-    description = `${title} designed for quiet luxury styling, everyday wear, and gift-ready Etsy search intent. This ${typeTerm} keeps the original product category accurate while improving mobile title clarity and buyer confidence.`;
+    title = enforceLockedProductTypeInTitle(ensureTitleProductType(fallbackOptimizedTitle(listing), clusters.product_type), detectedProductType);
+    tags = generateEtsyTags(listing, optimizationMode);
+    description = fallbackDescription(listing, clusters);
     candidate = {
       ...optimized,
       seo_title: title,
@@ -788,6 +1108,9 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
       optimized_description: description,
       tags,
       optimized_tags: tags,
+      keyword_clusters: clusters,
+      optimization_mode: optimizationMode,
+      compliance_checks: complianceChecks(title, tags, clusters),
       taxonomy_validation: validation,
       strict_jewelry_taxonomy: true,
       final_output_source: finalOutputSource
@@ -805,7 +1128,10 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
     ...candidate,
     detected_product_type: detectedProductType,
     strict_jewelry_taxonomy: true,
-    final_output_source: finalOutputSource
+    final_output_source: finalOutputSource,
+    keyword_clusters: clusters,
+    optimization_mode: optimizationMode,
+    compliance_checks: complianceChecks(candidate.seo_title, candidate.tags || [], clusters)
   };
 }
 
@@ -814,16 +1140,21 @@ function buildOptimizationResponsePayload(product = {}, log = {}, session = {}) 
     normalizeOptimization(log.optimization_record?.after || log.make_response?.parsed || log.make_response?.body || {}),
     product
   );
+  const analysis = scoreOptimization(optimized);
   return {
     ...log,
     optimized_title: optimized.optimized_title,
     seo_title: optimized.seo_title,
     optimized_description: optimized.optimized_description,
     optimized_tags: optimized.optimized_tags,
+    keyword_clusters: optimized.keyword_clusters,
+    compliance_checks: optimized.compliance_checks,
+    confidence_breakdown: analysis.confidence_breakdown,
+    optimization_mode: optimized.optimization_mode || optimizationModeFrom(product),
     final_output_source: optimized.final_output_source,
     validation_result: optimized.taxonomy_validation,
     final_output_valid: optimized.taxonomy_validation?.valid !== false,
-    analysis: scoreOptimization(optimized),
+    analysis,
     session
   };
 }
@@ -856,9 +1187,14 @@ async function attachFinalOptimizationRecord(log = {}, product = {}, optimized =
 
 async function sendToMakeWithTaxonomyRetry(product = {}) {
   const firstLog = await sendToMake(product);
-  const firstRaw = rawOptimizationFromLog(firstLog);
+  const firstRaw = enforceOptimizationProductType(rawOptimizationFromLog(firstLog), product);
   const firstValidation = validateJewelryOptimization(firstRaw, product);
-  if (firstValidation.valid) return attachFinalOptimizationRecord(firstLog, product, firstRaw, "ai_valid");
+  if (firstValidation.valid) return attachFinalOptimizationRecord(firstLog, product, firstRaw, "ai");
+  console.log("[FALLBACK TRIGGER]", {
+    stage: "first_ai_validation",
+    condition: "first_ai_output_invalid_retry_required",
+    fail_reasons: firstValidation.fail_reasons || []
+  });
   console.log("[OPTIMIZATION DEBUG]", {
     detected_product_type: detectJewelryProductType(product),
     validation_result: firstValidation,
@@ -868,11 +1204,16 @@ async function sendToMakeWithTaxonomyRetry(product = {}) {
   const retryLog = await sendToMake({
     ...product,
     strict_jewelry_taxonomy: true,
-    ai_system_rule: "Never change the original jewelry product category."
+    ai_system_rule: "CRITICAL: The optimized title MUST contain the exact same product type as the original. If original contains 'necklace', output MUST contain 'necklace'. Never change necklace→ring, bracelet→necklace, earring→pendant. Product type is LOCKED."
   });
-  const retryRaw = rawOptimizationFromLog(retryLog);
+  const retryRaw = enforceOptimizationProductType(rawOptimizationFromLog(retryLog), product);
   const retryValidation = validateJewelryOptimization(retryRaw, product);
   if (retryValidation.valid) return attachFinalOptimizationRecord(retryLog, product, retryRaw, "ai_retry_valid");
+  console.log("[FALLBACK TRIGGER]", {
+    stage: "retry_validation",
+    condition: "retry_ai_output_invalid_safe_fallback_required",
+    fail_reasons: retryValidation.fail_reasons || []
+  });
   const fallbackLog = retryLog.status === "completed" ? retryLog : firstLog;
   return attachFinalOptimizationRecord(fallbackLog, product, {}, "safe_fallback");
 }
@@ -883,8 +1224,15 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
   const tags = optimized.tags || [];
   const alt = optimized.alt_text || "";
   const canva = optimized.canva_prompt || "";
+  const clusters = optimized.keyword_clusters || keywordClusters(optimized, optimized.optimization_mode || "safe_seo");
+  const checks = optimized.compliance_checks || complianceChecks(title, tags, clusters);
   const titleWords = title.split(/\s+/).filter(Boolean);
   const lowerTitle = title.toLowerCase();
+  const first40 = lowerTitle.slice(0, 40);
+  const primary = String(clusters.primary_keyword || clusters.product_type || "").toLowerCase();
+  const primaryParts = primary.split(/\s+/).filter(Boolean);
+  const primaryInFirst40 = primaryParts.some((part) => first40.includes(part));
+  const primaryPosition = primaryParts.length ? Math.min(...primaryParts.map((part) => lowerTitle.indexOf(part)).filter((index) => index >= 0), 999) : 999;
   const giftPhraseMatches = lowerTitle.match(/gift for her|birthday gift|bridesmaid jewelry|quiet luxury gift|anniversary gift|meaningful gift/g) || [];
   const repeatedGiftTerms = new Set(giftPhraseMatches).size !== giftPhraseMatches.length || giftPhraseMatches.length > 1;
   const spamSeparators = (title.match(/,|\||-/g) || []).length;
@@ -906,38 +1254,39 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
         genericPenalty
     )
   );
-  const seo_score = Math.max(0, Math.min(
-    100,
-    (title.length > 0 ? 20 : 0) +
-      (titleWords.length <= 15 ? 20 : -10) +
-      (/necklace|jewelry|pearl|gold|chain/i.test(title) ? 20 : 0) +
-      (description.length > 180 ? 20 : 0) +
-      (tags.length === 13 ? 25 : 0) +
-      (repeatedGiftTerms || spamSeparators > 3 ? -25 : 0) -
-      categoryPenalty -
-      primaryKeywordPenalty -
-      carryPenalty -
+  const tagText = tags.join(" ").toLowerCase();
+  const titleDensity = primaryParts.length ? primaryParts.filter((part) => lowerTitle.includes(part)).length / primaryParts.length : 0;
+  const titleLengthScore = title.length >= 40 && title.length <= 140 ? 25 : title.length <= 140 ? 15 : 5;
+  const placementScore = primaryInFirst40 ? 30 : lowerTitle.includes(clusters.product_type || "") ? 20 : 5;
+  const densityScore = Math.round(titleDensity * 25);
+  const seo_score = clampScore(
+    placementScore +
+      titleLengthScore +
+      densityScore +
+      (tags.length === 13 ? 15 : Math.min(12, tags.length)) +
+      (description.length > 180 ? 15 : 5) -
+      (checks.keyword_spam ? 25 : 0) -
       genericPenalty
-  ));
-  const ctr_score = Math.max(0, Math.min(
-    100,
-    (/hero|thumbnail|mobile|large|clean|ivory|neutral/i.test(canva) ? 45 : 0) +
-      (/quiet luxury|minimal|layering|pearl|gold/i.test(title) ? 25 : 0) +
-      (titleWords.length <= 15 ? 15 : 0) +
-      (canva.length > 80 ? 15 : 0) -
+  );
+  const ctr_score = clampScore(
+    POWER_WORDS.filter((word) => lowerTitle.includes(word)).length * 10 +
+      (title.includes("|") ? 12 : 0) +
+      (title.includes(",") ? 8 : 0) +
+      (primaryInFirst40 ? 20 : 0) +
+      (/gift|everyday|layer|luxury|dainty|refined|elegant/i.test(title) ? 25 : 0) -
       Math.round(categoryPenalty / 2) -
       genericPenalty
-  ));
+  );
   const thumbnail_score = Math.min(
     100,
     (/65|70|75|mobile|ivory|neutral|no clutter|luxury/i.test(canva) ? 70 : 0) +
       (canva.length > 100 ? 30 : 0)
   );
-  const tag_quality_score = Math.min(
-    100,
-    (tags.length === 13 ? 40 : tags.length * 3) +
-      tags.filter((tag) => tag.length <= 20).length * 3 +
-      new Set(tags.map((tag) => tag.toLowerCase())).size * 2
+  const tag_relevance = clampScore(
+    (tags.length === 13 ? 25 : tags.length * 2) +
+      tags.filter((tag) => tag.length <= 20).length * 2 +
+      tags.filter((tag) => tag.split(/\s+/).some((word) => lowerTitle.includes(word))).length * 4 +
+      (checks.duplicate_tags ? -25 : 0)
   );
   const alt_text_score = Math.min(
     100,
@@ -953,71 +1302,62 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
       (/care|dry|store|perfume|water/i.test(description) ? 20 : 0) +
       (/ACOPES AI|quiet luxury|minimal/i.test(description) ? 20 : 0)
   );
-  const mobile_readability_score = Math.min(
-    100,
-    (titleWords.length > 0 && titleWords.length <= 12 ? 45 : titleWords.length <= 15 ? 35 : 10) +
-      (title.length <= 72 ? 35 : title.length <= 95 ? 22 : 8) +
-      (spamSeparators <= 2 ? 20 : 5)
-  );
-  const buyer_intent_score = Math.max(0, Math.min(
-    100,
-    (/necklace|jewelry|chain|pearl|gold/i.test(title) ? 30 : 0) +
-      (/gift|birthday|bridesmaid|anniversary|everyday|layer/i.test(description) ? 30 : 0) +
-      (tags.some((tag) => /gift|birthday|bridesmaid|everyday|minimal|layer/i.test(tag)) ? 25 : 0) +
-      (/minimal|quiet luxury|dainty|timeless/i.test(`${title} ${description}`) ? 15 : 0) -
+  const mobile_readability_score = clampScore((primaryInFirst40 ? 65 : 20) + (title.length <= 140 ? 20 : 0) + (titleWords.length <= 18 ? 15 : 5));
+  const keyword_positioning = clampScore(primaryPosition <= 10 ? 100 : primaryPosition <= 20 ? 80 : primaryPosition <= 40 ? 60 : 25);
+  const buyer_intent_score = clampScore(
+    TRANSACTIONAL_WORDS.filter((word) => `${lowerTitle} ${description.toLowerCase()} ${tagText}`.includes(word)).length * 12 +
+      (clusters.gift_keyword ? 15 : 0) -
       primaryKeywordPenalty -
       genericPenalty
-  ));
-  const competition_score = Math.min(
-    100,
-    (/gold|pearl|necklace|chain/i.test(title) ? 55 : 35) +
-      (titleWords.length <= 15 ? 20 : 5) +
-      (tags.length >= 10 ? 20 : tags.length) +
-      (repeatedGiftTerms ? -15 : 5)
   );
-  const finalSeo = clampScore((numberOrUndefined(scoreOverrides.seo_score ?? optimized.provided_scores?.seo_score) ?? seo_score) - categoryPenalty - primaryKeywordPenalty - genericPenalty);
+  const giftability_score = clampScore((/gift|mom|bridesmaid|birthday|anniversary|wedding|christmas/i.test(`${title} ${description} ${tagText}`) ? 75 : 15) + (clusters.gift_keyword ? 20 : 0));
+  const competition_pressure = clampScore(100 - (["gold", "jewelry", "gift", "necklace", "ring"].filter((word) => lowerTitle === word || tags.includes(word)).length * 15) - (checks.keyword_spam ? 20 : 0));
+  const viral_potential = clampScore(ctr_score * 0.4 + giftability_score * 0.35 + (clusters.occasion_keyword ? 15 : 0) + (thumbnail_score || 0) * 0.1);
+  const finalSeo = clampScore((numberOrUndefined(scoreOverrides.seo_score ?? optimized.provided_scores?.seo_score) ?? seo_score) - genericPenalty);
   const finalCtr = clampScore((numberOrUndefined(scoreOverrides.ctr_score ?? optimized.provided_scores?.ctr_score) ?? ctr_score) - Math.round(categoryPenalty / 2) - genericPenalty);
   const finalThumbnail = numberOrUndefined(scoreOverrides.thumbnail_score ?? optimized.provided_scores?.thumbnail_score) ?? thumbnail_score;
-  const finalTags = clampScore((numberOrUndefined(scoreOverrides.tag_quality_score ?? optimized.provided_scores?.tag_quality_score) ?? tag_quality_score) - primaryKeywordPenalty);
-  const confidence_score = Math.round(
-    finalSeo * 0.25 +
-      finalCtr * 0.25 +
-      finalThumbnail * 0.2 +
-      finalTags * 0.15 +
-      mobile_readability_score * 0.05 +
-      buyer_intent_score * 0.05 +
-      competition_score * 0.05
-  );
+  const finalTags = clampScore((numberOrUndefined(scoreOverrides.tag_quality_score ?? optimized.provided_scores?.tag_quality_score) ?? tag_relevance) - primaryKeywordPenalty);
+  const confidence_breakdown = confidenceBreakdown({ ctr_score: finalCtr }, { ...optimized, tags, keyword_clusters: clusters, compliance_checks: checks });
+  const confidence_score = confidence_breakdown.confidence_score;
 
   return {
     seo_score: finalSeo,
     ctr_score: finalCtr,
     thumbnail_score: finalThumbnail,
     tag_quality_score: finalTags,
+    tag_relevance: finalTags,
     alt_text_score: numberOrUndefined(scoreOverrides.alt_text_score ?? optimized.provided_scores?.alt_text_score) ?? alt_text_score,
     etsy_2026_title_score,
     description_quality_score,
     mobile_readability_score,
+    keyword_positioning,
     buyer_intent_score,
-    competition_score,
-    confidence_score
+    buyer_intent_match: buyer_intent_score,
+    giftability_score,
+    competition_pressure,
+    viral_potential,
+    confidence_score,
+    confidence_breakdown,
+    compliance_checks: checks,
+    keyword_clusters: clusters
   };
 }
 
 function confidenceLabel(score = 0) {
-  if (score >= 95) return "Elite";
-  if (score >= 90) return "High confidence";
-  if (score >= 80) return "Good confidence";
-  if (score >= 70) return "Moderate";
-  return "Weak optimization";
+  if (score >= 91) return "Excellent";
+  if (score >= 71) return "Good";
+  if (score >= 41) return "Medium";
+  return "Low";
 }
 
 async function createOptimizationRecord({ listing, optimized, source = "make_response", request_log_id = null }) {
   const normalized = ensureOptimizationContent(normalizeOptimization(optimized), listing);
   const scores = scoreOptimization(normalized);
+  const listingId = normalizeListingId(listing.listing_id || listing.id);
   const record = {
     id: crypto.randomUUID(),
-    listing_id: listing.listing_id,
+    listing_id: listingId,
+    email: normalizeEmail(listing.email || optimized.email),
     listing_name: listing.name,
     created_at: new Date().toISOString(),
     source,
@@ -1054,8 +1394,9 @@ async function createOptimizationRecord({ listing, optimized, source = "make_res
   };
 
   const history = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
-  history.unshift(record);
-  await writeJsonFile(optimizationsPath, history);
+  const nextHistory = history.filter((item) => normalizeListingId(item.listing_id || item.id) !== listingId);
+  nextHistory.unshift(record);
+  await writeJsonFile(optimizationsPath, nextHistory);
   return record;
 }
 
@@ -1179,32 +1520,8 @@ function normalizeListing(listing = {}) {
 }
 
 async function readEtsyTokens() {
-  const stored = await readRuntimeJson(etsyTokensPath, etsyTokensSeedPath, {});
-  if (stored.access_token || stored.refresh_token) return stored;
-  const envExpiresAt = ETSY_TOKEN_EXPIRES_AT_ENV ? Number(ETSY_TOKEN_EXPIRES_AT_ENV) : 0;
-  const envTokens = {
-    access_token: ETSY_ACCESS_TOKEN_ENV,
-    refresh_token: ETSY_REFRESH_TOKEN_ENV,
-    token_type: "Bearer",
-    scope: ETSY_SCOPES,
-    expires_at: Number.isFinite(envExpiresAt) && envExpiresAt > 0 ? envExpiresAt : 0,
-    shop_id: ETSY_SHOP_ID_ENV,
-    shop_name: FALLBACK_SHOP_NAME,
-    shop_url: FALLBACK_SHOP_URL,
-    source: "environment"
-  };
-  if (envTokens.access_token || envTokens.refresh_token) {
-    etsyDebug("Etsy auth loaded", {
-      source: "environment",
-      hasAccessToken: Boolean(envTokens.access_token),
-      hasRefreshToken: Boolean(envTokens.refresh_token),
-      shop_id: envTokens.shop_id || "",
-      shop_name: envTokens.shop_name || ""
-    });
-    return envTokens;
-  }
   etsyDebug("Etsy auth loaded", {
-    source: "none",
+    source: "session_user_only",
     hasAccessToken: false,
     hasRefreshToken: false,
     shop_id: "",
@@ -1214,7 +1531,7 @@ async function readEtsyTokens() {
 }
 
 async function writeEtsyTokens(tokens) {
-  await writeJsonFile(etsyTokensPath, tokens || {});
+  return tokens || {};
 }
 
 async function readListingsMeta() {
@@ -1467,6 +1784,28 @@ function selectActiveShop(shops = []) {
 async function fetchEtsyShopLookup(url, tokens, label) {
   const response = await fetch(url, { headers: etsyApiHeaders(tokens.access_token) });
   const body = await response.json().catch(() => ({}));
+  if (label === "users_self") {
+    console.log("[ETSY DEBUG] FULL USERS SELF RESPONSE", {
+      url,
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+      primary_email: body.primary_email || body.user?.primary_email || body.data?.primary_email || body.results?.[0]?.primary_email || "",
+      user_id: body.user_id || body.user?.user_id || body.data?.user_id || body.results?.[0]?.user_id || "",
+      shop_id: body.shop_id || body.user?.shop_id || body.data?.shop_id || body.results?.[0]?.shop_id || "",
+      login_name: body.login_name || body.user?.login_name || body.data?.login_name || body.results?.[0]?.login_name || "",
+      access_token_prefix_10: String(tokens.access_token || "").slice(0, 10)
+    });
+  }
+  if (label === "user_shops") {
+    console.log("[ETSY DEBUG] FULL USER SHOPS RESPONSE", {
+      url,
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      body,
+      access_token_prefix_10: String(tokens.access_token || "").slice(0, 10)
+    });
+  }
   etsyDebug("Etsy shop lookup response", {
     label,
     url,
@@ -1574,8 +1913,6 @@ async function discoverEtsyShop(tokens, context = {}) {
 
 async function syncEtsyListings(tokens = null, res = null, req = null) {
   tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
-  globalThis.etsyAuthStore = publicEtsyAuth(tokens);
-  if (res) setEtsyAuthCookie(res, tokens);
   console.log("Fetching live Etsy listings", { shop_id: tokens.shop_id || "", shop_name: tokens.shop_name || "" });
   const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens, { req, res });
   const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
@@ -1608,6 +1945,7 @@ async function sendToMake(product) {
       created_at: startedAt,
       completed_at: new Date().toISOString(),
       status: "failed",
+      email: normalizeEmail(product.email),
       payload,
       make_response: {
         status: null,
@@ -1637,6 +1975,7 @@ async function sendToMake(product) {
     } catch {
       parsed = null;
     }
+    console.log("[AI RESPONSE RAW]", responseText.slice(0, 200));
     console.log("AI optimization raw:", parsed || responseText);
 
     const log = {
@@ -1644,6 +1983,7 @@ async function sendToMake(product) {
       created_at: startedAt,
       completed_at: new Date().toISOString(),
       status: response.ok ? "completed" : "failed",
+      email: normalizeEmail(product.email),
       payload,
       make_response: {
         status: response.status,
@@ -1669,6 +2009,7 @@ async function sendToMake(product) {
       created_at: startedAt,
       completed_at: new Date().toISOString(),
       status: "failed",
+      email: normalizeEmail(product.email),
       payload,
       make_response: {
         status: null,
@@ -1711,8 +2052,8 @@ function sessionSummary(session, user = null, options = {}) {
   };
 }
 
-app.get("/api/logs", async (_req, res) => {
-  res.json(successResponse(await readLogs(), "Logs loaded"));
+app.get("/api/logs", requireUser, async (req, res) => {
+  res.json(successResponse((await readLogs()).filter((log) => belongsToSessionEmail(log, req)), "Logs loaded"));
 });
 
 app.get("/api/session", async (req, res) => {
@@ -1721,7 +2062,7 @@ app.get("/api/session", async (req, res) => {
 
 app.get("/api/etsy/status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const tokens = req.etsyAuth || {};
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -1730,7 +2071,7 @@ app.get("/api/etsy/status", async (req, res) => {
 
 app.get("/api/auth-status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const tokens = req.etsyAuth || {};
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -1739,7 +2080,7 @@ app.get("/api/auth-status", async (req, res) => {
 
 app.get("/api/auth/status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const tokens = req.etsyAuth || {};
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -1822,6 +2163,12 @@ async function finishEtsyOAuth(req, res) {
       etsyDebug("Shop status resolution skipped", { error: error instanceof Error ? error.message : String(error) });
     }
     await persistRequestEtsyAuth(req, res, resolvedTokens);
+    console.log("[OAUTH SAVE]", {
+      email: req.session?.email || "",
+      user_id: resolvedTokens.user_id || "",
+      shop_id: resolvedTokens.shop_id || "",
+      token_present: Boolean(resolvedTokens.access_token)
+    });
     etsyDebug("Etsy auth saved after callback", {
       hasAccessToken: Boolean(resolvedTokens.access_token),
       hasRefreshToken: Boolean(resolvedTokens.refresh_token),
@@ -1846,21 +2193,19 @@ app.get("/api/etsy/connect", startEtsyOAuth);
 app.get("/auth/etsy/callback", finishEtsyOAuth);
 app.get("/api/etsy/callback", finishEtsyOAuth);
 
-app.post("/api/etsy/disconnect", async (req, res) => {
-  await writeEtsyTokens({});
-  globalThis.etsyAuthStore = null;
+app.post("/api/etsy/disconnect", requireUser, async (req, res) => {
   clearEtsyAuthCookie(res);
   if (req.user?.id) await updateUser(req.user.id, { etsy_auth: null });
   res.json(successResponse(await etsyTokenStatus(), "Etsy disconnected"));
 });
 
-app.post("/api/etsy/sync", async (req, res) => {
+app.post("/api/etsy/sync", requireUser, async (req, res) => {
   try {
     if (!etsyConfigured()) {
-      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))));
+      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(req.etsyAuth || {})));
       return;
     }
-    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const userTokens = req.etsyAuth || {};
     if (!userTokens.access_token) {
       res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
@@ -1870,7 +2215,7 @@ app.post("/api/etsy/sync", async (req, res) => {
       status: "completed",
       source: "etsy_api",
       listings,
-      etsy: await etsyTokenStatus(req.etsyAuth || globalThis.etsyAuthStore || userTokens)
+      etsy: await etsyTokenStatus(req.etsyAuth || userTokens)
     }, "Etsy listings synced"));
   } catch (error) {
     const isRefreshFailure = error?.code === "token_refresh_failed" || error?.code === "missing_refresh_token";
@@ -1879,14 +2224,14 @@ app.post("/api/etsy/sync", async (req, res) => {
     res.status(status).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required" } }
     ));
   }
 });
 
-app.post("/api/etsy/refresh-sync", async (req, res) => {
+app.post("/api/etsy/refresh-sync", requireUser, async (req, res) => {
   try {
-    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const userTokens = req.etsyAuth || {};
     if (!userTokens.access_token) {
       res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
@@ -1906,14 +2251,14 @@ app.post("/api/etsy/refresh-sync", async (req, res) => {
       status: "completed",
       source: "etsy_refresh_sync",
       listings,
-      etsy: await etsyTokenStatus(globalThis.etsyAuthStore || token)
+      etsy: await etsyTokenStatus(token)
     }, "Etsy refresh sync completed"));
   } catch (error) {
     const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : error?.code === "missing_refresh_token" ? "missing_refresh_token" : error?.code === "token_refresh_failed" ? "token_refresh_failed" : "etsy_sync_failed";
     res.status(errorCode === "seller_account_required" ? 403 : errorCode === "etsy_sync_failed" ? 502 : 401).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required" } }
     ));
   }
 });
@@ -1956,18 +2301,18 @@ app.post("/api/waitlist", async (req, res) => {
   res.json(successResponse({ status: "joined" }, "Joined waitlist"));
 });
 
-app.get("/api/optimizations", async (_req, res) => {
+app.get("/api/optimizations", requireUser, async (req, res) => {
   const records = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
-  res.json(successResponse(records.map(enrichOptimizationRecord), "Optimizations loaded"));
+  res.json(successResponse(records.filter((record) => belongsToSessionEmail(record, req)).map(enrichOptimizationRecord), "Optimizations loaded"));
 });
 
-app.get("/api/queue", async (_req, res) => {
-  res.json(successResponse(await readRuntimeJson(queuePath, queueSeedPath, []), "Queue loaded"));
+app.get("/api/queue", requireUser, async (req, res) => {
+  res.json(successResponse((await readRuntimeJson(queuePath, queueSeedPath, [])).filter((item) => belongsToSessionEmail(item, req)), "Queue loaded"));
 });
 
-app.get("/api/listings", async (req, res) => {
+app.get("/api/listings", requireUser, async (req, res) => {
   try {
-    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    const userTokens = req.user?.etsy_auth || {};
     etsyDebug("Listings auth snapshot", {
       hasAccessToken: Boolean(userTokens.access_token),
       hasRefreshToken: Boolean(userTokens.refresh_token),
@@ -1994,8 +2339,6 @@ app.get("/api/listings", async (req, res) => {
           shop_url: req.session?.etsy_shop_url || validTokens.shop_url || ""
         }
       : await discoverEtsyShop(validTokens, { req, res });
-    globalThis.etsyAuthStore = publicEtsyAuth(tokens);
-    setEtsyAuthCookie(res, tokens);
     const response = await fetch(`https://openapi.etsy.com/v3/application/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?limit=100&includes=Images`, {
       headers: etsyApiHeaders(tokens.access_token)
     });
@@ -2041,9 +2384,14 @@ app.get("/api/listings", async (req, res) => {
   }
 });
 
-app.post("/api/optimize", async (req, res) => {
+app.post("/api/optimize", requireUser, async (req, res) => {
   await incrementAnalytics("optimization_started");
-  const product = req.body.product || req.body.listing || req.body || {};
+  const baseProduct = req.body.product || req.body.listing || req.body || {};
+  const product = { ...baseProduct, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || baseProduct.optimization_mode || "safe_seo" };
+  console.log("[OPTIMIZE START]", {
+    listing_name: product.name || product.title || product.listing_id || "unknown_listing",
+    optimization_mode: product.optimization_mode
+  });
   const log = await sendToMakeWithTaxonomyRetry(product);
   const user = await getSessionUser(req.session);
   const responseBody = successResponse(
@@ -2054,7 +2402,7 @@ app.post("/api/optimize", async (req, res) => {
   res.status(200).json(responseBody);
 });
 
-app.post("/api/send", async (req, res) => {
+app.post("/api/send", requireUser, async (req, res) => {
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
   if (!user) {
@@ -2063,17 +2411,18 @@ app.post("/api/send", async (req, res) => {
   }
   const creditBlocked = !devMode && user.credits_remaining < 1;
   await incrementAnalytics("optimization_started");
-  const log = await sendToMakeWithTaxonomyRetry(req.body.product);
+  const sendProduct = { ...(req.body.product || {}), email: sessionEmail(req), optimization_mode: req.body.optimization_mode || req.body.product?.optimization_mode || "safe_seo" };
+  const log = await sendToMakeWithTaxonomyRetry(sendProduct);
   const updatedUser = !devMode && !creditBlocked && log.status === "completed" ? await consumeCredits(user, 1) : user;
   const responseBody = successResponse(
-    buildOptimizationResponsePayload(req.body.product, { ...log, credit_blocked: creditBlocked }, sessionSummary(req.session, updatedUser, { dev_mode: devMode })),
+    buildOptimizationResponsePayload(sendProduct, { ...log, credit_blocked: creditBlocked }, sessionSummary(req.session, updatedUser, { dev_mode: devMode })),
     log.status === "completed" ? "Optimization queued" : "Optimization generated with fallback"
   );
   console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
   res.status(200).json(responseBody);
 });
 
-app.post("/api/send-batch", async (req, res) => {
+app.post("/api/send-batch", requireUser, async (req, res) => {
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
@@ -2096,7 +2445,7 @@ app.post("/api/send-batch", async (req, res) => {
   const results = [];
   for (const product of products) {
     await incrementAnalytics("optimization_started");
-    results.push(await sendToMakeWithTaxonomyRetry(product));
+    results.push(await sendToMakeWithTaxonomyRetry({ ...product, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo" }));
   }
   const completedCount = results.filter((item) => item.status === "completed").length;
   const updatedUser = !devMode && completedCount > 0 ? await consumeCredits(user, completedCount) : user;
@@ -2107,7 +2456,7 @@ app.post("/api/send-batch", async (req, res) => {
   }, "Batch processed"));
 });
 
-app.post("/api/retry/:id", async (req, res) => {
+app.post("/api/retry/:id", requireUser, async (req, res) => {
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
   if (!user) {
@@ -2128,7 +2477,7 @@ app.post("/api/retry/:id", async (req, res) => {
   }
 
   const logs = await readLogs();
-  const original = logs.find((log) => log.id === req.params.id);
+  const original = logs.find((log) => log.id === req.params.id && belongsToSessionEmail(log, req));
   if (!original) {
     res.status(404).json(errorResponse("log_not_found", "Log not found"));
     return;
@@ -2142,7 +2491,8 @@ app.post("/api/retry/:id", async (req, res) => {
     description: original.payload.current_description,
     tags: original.payload.current_tags,
     image_url: original.payload.image_url,
-    listing_id: original.payload.listing_id
+    listing_id: original.payload.listing_id,
+    email: sessionEmail(req)
   };
 
   const log = await sendToMake(product);
@@ -2315,11 +2665,12 @@ app.post("/api/paddle-webhook-test", async (req, res) => {
   }, "Plan updated"));
 });
 
-app.post("/api/queue", async (req, res) => {
+app.post("/api/queue", requireUser, async (req, res) => {
   const listings = Array.isArray(req.body.listings) ? req.body.listings : [];
   const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
   const queued = listings.map((listing) => ({
     id: crypto.randomUUID(),
+    email: sessionEmail(req),
     listing_id: listing.listing_id,
     listing_name: listing.name,
     queued_at: new Date().toISOString(),
@@ -2332,9 +2683,9 @@ app.post("/api/queue", async (req, res) => {
   res.json(successResponse({ status: "queued", queued }, "Listings queued"));
 });
 
-app.post("/api/queue/:id/retry", async (req, res) => {
+app.post("/api/queue/:id/retry", requireUser, async (req, res) => {
   const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
-  const item = queue.find((entry) => entry.id === req.params.id);
+  const item = queue.find((entry) => entry.id === req.params.id && belongsToSessionEmail(entry, req));
   if (!item) {
     res.status(404).json(errorResponse("queue_item_not_found", "Queue item not found"));
     return;
@@ -2346,9 +2697,9 @@ app.post("/api/queue/:id/retry", async (req, res) => {
   res.json(successResponse(item, "Queue item retried"));
 });
 
-app.post("/api/optimizations/:id/approve", async (req, res) => {
+app.post("/api/optimizations/:id/approve", requireUser, async (req, res) => {
   const history = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
-  const record = history.find((item) => item.id === req.params.id);
+  const record = history.find((item) => item.id === req.params.id && belongsToSessionEmail(item, req));
   if (!record) {
     res.status(404).json(errorResponse("optimization_not_found", "Optimization not found"));
     return;

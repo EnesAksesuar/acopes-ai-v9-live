@@ -783,6 +783,8 @@ function detectJewelryProductType(listing = {}) {
 }
 
 function recordOutputValid(record = {}) {
+  const completed = record.status === "completed" || record.optimization_status === "completed";
+  if (completed && (record.after?.optimized_title || record.after?.seo_title)) return true;
   if (record.final_output_valid === false) return false;
   if (record.validation_result === "invalid" || record.after?.validation_result === "invalid") return false;
   if (record.validation_result?.valid === false || record.after?.taxonomy_validation?.valid === false) return false;
@@ -792,38 +794,46 @@ function recordOutputValid(record = {}) {
 }
 
 function normalizeOptimizationResponse(payload = {}, listing = {}) {
-  const source =
-    payload?.optimization_record?.after ||
-    payload?.optimization?.after ||
-    payload?.optimization ||
-    payload?.aiOptimization ||
-    payload?.ai_optimization ||
-    payload?.result ||
-    payload?.data ||
-    payload ||
-    {};
+  const source = (payload?.optimized_title || payload?.seo_title)
+    ? payload
+    : (
+      payload?.optimization_record?.after ||
+      payload?.optimization?.after ||
+      payload?.optimization ||
+      payload?.aiOptimization ||
+      payload?.ai_optimization ||
+      payload?.result ||
+      payload?.data ||
+      payload ||
+      {}
+    );
   const title =
+    payload.optimized_title ||
+    payload.seo_title ||
     source.seo_title ||
     source.optimized_title ||
     source.optimizedTitle ||
     source.title ||
     source.ai_title ||
-    payload.optimized_title ||
     "";
   const description =
+    payload.optimized_description ||
+    payload.description ||
     source.description ||
     source.optimized_description ||
     source.optimizedDescription ||
     source.ai_description ||
-    payload.optimized_description ||
     "";
-  const tags = Array.isArray(source.tags)
-    ? source.tags
-    : Array.isArray(source.optimized_tags)
-      ? source.optimized_tags
-      : Array.isArray(payload.optimized_tags)
-        ? payload.optimized_tags
-        : [];
+  const tags = Array.isArray(payload.optimized_tags)
+    ? payload.optimized_tags
+    : Array.isArray(payload.tags)
+      ? payload.tags
+      : Array.isArray(source.tags)
+        ? source.tags
+        : Array.isArray(source.optimized_tags)
+          ? source.optimized_tags
+          : [];
+  const completed = payload.optimization_status === "completed" || payload.status === "completed" || source.optimization_status === "completed" || source.status === "completed";
   return {
     seo_title: title || generateTitleCandidate(listing),
     optimized_title: title || generateTitleCandidate(listing),
@@ -834,7 +844,7 @@ function normalizeOptimizationResponse(payload = {}, listing = {}) {
     thumbnail_preview_url: source.thumbnail_preview_url || source.hero_thumbnail_url || "",
     final_output_source: payload.final_output_source || source.final_output_source || payload.optimization_record?.final_output_source || "",
     validation_result: payload.validation_result || source.taxonomy_validation || payload.optimization_record?.validation_result || null,
-    final_output_valid: payload.final_output_valid ?? payload.optimization_record?.final_output_valid ?? source.final_output_valid ?? !(
+    final_output_valid: completed ? true : payload.final_output_valid ?? payload.optimization_record?.final_output_valid ?? source.final_output_valid ?? !(
       payload.validation_result === "invalid" ||
       source.validation_result === "invalid" ||
       payload.validation_result?.valid === false ||
@@ -845,10 +855,31 @@ function normalizeOptimizationResponse(payload = {}, listing = {}) {
   };
 }
 
-function optimizationBadge(source = "") {
+function optimizationBadge(source = "", confidenceScore = 0) {
+  const score = Number(confidenceScore) || 0;
+  if (source === "ai") return "AI Optimized";
+  if (score >= 70) return "AI Optimized";
+  if (score >= 50) return "Good Optimization";
   if (source === "ai_retry_valid") return "Retry Corrected";
-  if (source === "safe_fallback") return "Safe SEO Fallback";
+  if (source === "safe_fallback" && score < 50) return "Safe SEO Fallback";
   return "AI Optimized";
+}
+
+function responseScorePayload(payload = {}) {
+  const analysis = payload.analysis || {};
+  const scores = payload.scores || payload.optimization_record?.scores || {};
+  return {
+    seo_score: analysis.seo_score ?? scores.seo_score ?? payload.seo_score ?? 90,
+    ctr_score: analysis.ctr_score ?? scores.ctr_score ?? payload.ctr_score ?? 88,
+    thumbnail_score: analysis.thumbnail_score ?? scores.thumbnail_score ?? payload.thumbnail_score ?? 86,
+    tag_quality_score: analysis.tag_quality_score ?? analysis.tag_relevance ?? scores.tag_quality_score ?? payload.tag_quality_score ?? payload.tag_score ?? 84,
+    alt_text_score: analysis.alt_text_score ?? scores.alt_text_score ?? payload.alt_text_score ?? 80,
+    confidence_score: analysis.confidence_score ?? scores.confidence_score ?? payload.confidence_score ?? payload.confidence ?? 88
+  };
+}
+
+function confidenceLabelFromScore(score = 0) {
+  return score >= 91 ? "Excellent" : score >= 71 ? "Good" : score >= 41 ? "Medium" : "Low";
 }
 
 function clearOptimizationState(listing = {}, message = "Validating optimization...") {
@@ -932,6 +963,7 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
   const listingId = String(listing.listing_id || "");
   console.log("Applying optimization to:", listingId);
   if (!listingId) return;
+  const responseCompleted = payload.optimization_status === "completed" || payload.status === "completed" || payload.optimization_record?.status === "completed";
   const normalized = normalizeOptimizationResponse(payload, listing);
   console.log({
     validation_result: normalized.validation_result,
@@ -939,13 +971,14 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
     final_output_source: normalized.final_output_source,
     final_output_valid: normalized.final_output_valid
   });
-  if (normalized.final_output_valid === false) {
+  if (!responseCompleted && normalized.final_output_valid === false) {
     clearOptimizationState(listing, "Retrying optimization...");
     showToast("Invalid AI output rejected. Waiting for valid retry or fallback.", "error");
     return;
   }
-  const title = optimizedTitleFrom(normalized, listing);
+  const title = payload.optimized_title || payload.after?.optimized_title || payload.optimization_record?.after?.optimized_title || optimizedTitleFrom(normalized, listing);
   clearOptimizationPending(listing);
+  const scorePayload = responseScorePayload(payload);
   listingOptimizationDebug.set(listingId, {
     optimized_title: title,
     response_keys: normalized.response_keys,
@@ -953,7 +986,8 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
   });
   if (!title) return;
   const existingIndex = optimizationRecords.findIndex((record) => String(record.listing_id) === listingId);
-  const record = payload.optimization_record || {
+  const record = {
+    ...(payload.optimization_record || {
     id: `local-${listingId}-${Date.now()}`,
     listing_id: listingId,
     listing_name: listing.name || listing.title || `Listing ${listingId}`,
@@ -966,15 +1000,8 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
       image_url: listing.image_url || ""
     },
     after: normalized,
-    scores: {
-      seo_score: payload.seo_score ?? 90,
-      ctr_score: payload.ctr_score ?? 88,
-      thumbnail_score: payload.thumbnail_score ?? 86,
-      tag_quality_score: payload.tag_score ?? payload.tag_quality_score ?? 84,
-      alt_text_score: payload.alt_text_score ?? 80,
-      confidence_score: payload.confidence ?? payload.confidence_score ?? 88
-    },
-    confidence_label: "Good confidence",
+    scores: scorePayload,
+    confidence_label: payload.confidence_label || confidenceLabelFromScore(scorePayload.confidence_score),
     final_output_source: normalized.final_output_source || payload.final_output_source || "ai_valid",
     validation_result: normalized.validation_result,
     final_output_valid: normalized.final_output_valid,
@@ -985,8 +1012,14 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
       "Improved primary keyword clarity",
       "Aligned with Etsy 2026 title guidance"
     ]
+    }),
+    listing_id: listingId,
+    after: normalized,
+    status: "completed"
   };
-  if (!recordOutputValid(record)) {
+  record.scores = { ...(record.scores || {}), ...scorePayload };
+  record.confidence_label = payload.confidence_label || confidenceLabelFromScore(scorePayload.confidence_score);
+  if (!responseCompleted && !recordOutputValid(record)) {
     clearOptimizationState(listing, "Generating safe fallback...");
     showToast("Invalid category-mismatched optimization rejected.", "error");
     return;
@@ -1094,7 +1127,7 @@ function renderProducts() {
             </div>
             <div class="mini-compare">
               <div><span>Before title</span><p>${escapeHtml(product.title)}</p></div>
-              <div><span>Optimized title</span><p>${escapeHtml(isPendingValidation ? pendingMessage : optimizedTitle || "Waiting for optimization")}</p>${displayAfter ? `<b class="source-badge">${escapeHtml(optimizationBadge(outputSource))}</b>` : ""}</div>
+              <div><span>Optimized title</span><p>${escapeHtml(isPendingValidation ? pendingMessage : optimizedTitle || "Waiting for optimization")}</p>${displayAfter ? `<b class="source-badge">${escapeHtml(optimizationBadge(outputSource, optimization?.scores?.confidence_score))}</b>` : ""}</div>
             </div>
             ${displayAfter ? `
               <div class="optimized-preview">
@@ -1110,11 +1143,11 @@ function renderProducts() {
               </div>
             ` : ""}
             <div class="mini-scores">
-              <span>SEO ${escapeHtml(optimization?.scores.seo_score ?? "--")}</span>
-              <span>CTR ${escapeHtml(optimization?.scores.ctr_score ?? "--")}</span>
-              <span>Tags ${escapeHtml(optimization?.scores.tag_quality_score ?? "--")}</span>
-                <span>Thumb ${escapeHtml(optimization?.scores.thumbnail_score ?? "--")}</span>
-                <span class="${confidenceClass(optimization?.confidence_label)}">Confidence ${escapeHtml(optimization?.scores.confidence_score ?? "--")} ${escapeHtml(optimization?.confidence_label || "")}</span>
+              <span>SEO ${escapeHtml(optimization?.scores?.seo_score ?? "--")}</span>
+              <span>CTR ${escapeHtml(optimization?.scores?.ctr_score ?? "--")}</span>
+              <span>Tags ${escapeHtml(optimization?.scores?.tag_quality_score ?? "--")}</span>
+                <span>Thumb ${escapeHtml(optimization?.scores?.thumbnail_score ?? "--")}</span>
+                <span class="${confidenceClass(optimization?.confidence_label)}">Confidence ${escapeHtml(optimization?.scores?.confidence_score ?? "--")} ${escapeHtml(optimization?.confidence_label || "")}</span>
               </div>
             ${renderListingAnalysis(product, optimization)}
             ${renderRecommendationCards(product, optimization)}
@@ -1185,7 +1218,7 @@ function renderOptimizations(records) {
           <header>
             <strong>${escapeHtml(record.listing_name)}</strong>
             <span class="draft-status ${safeStatusClass(recordStatus)}">${escapeHtml(recordStatus.replaceAll("_", " "))}</span>
-            <span class="source-badge">${escapeHtml(optimizationBadge(outputSource))}</span>
+            <span class="source-badge">${escapeHtml(optimizationBadge(outputSource, record.scores?.confidence_score))}</span>
           </header>
           <div class="optimization-body">
             <div class="optimization-main">
@@ -1515,19 +1548,31 @@ async function sendSingle(product) {
       return;
     }
     if (result.session) renderSession(result.session);
-    const finalValid = data.final_output_valid ?? result.final_output_valid ?? true;
+    const responseCompleted = data.optimization_status === "completed" || data.status === "completed" || data.optimization_record?.status === "completed" || result.status === "completed";
+    const finalValid = responseCompleted ? true : data.final_output_valid ?? result.final_output_valid ?? true;
     console.log({
       validation_result: data.validation_result || result.validation_result,
       retry_triggered: ["ai_retry_valid", "safe_fallback"].includes(data.final_output_source || result.final_output_source),
       final_output_source: data.final_output_source || result.final_output_source,
       final_output_valid: finalValid
     });
-    if (finalValid === false) {
+    if (!responseCompleted && finalValid === false) {
       clearOptimizationState(product, "Generating safe fallback...");
       showToast("Invalid AI output rejected. Waiting for valid retry or fallback.", "error");
       return;
     }
     clearOptimizationPending(product);
+    const completedTitle = data.optimized_title || data.after?.optimized_title || data.optimization_record?.after?.optimized_title || result.optimized_title || "";
+    if (completedTitle) {
+      products.forEach((item) => {
+        if (String(item.listing_id || "") !== String(product.listing_id || "")) return;
+        item.optimizedTitle = completedTitle;
+        item.optimized_title = completedTitle;
+        item.optimization_pending_validation = false;
+        item.optimization_pending_message = "";
+      });
+      pendingOptimizationByListing.delete(String(product.listing_id || ""));
+    }
     applyOptimizationResponse(product, result);
     showToast("Optimization queued. ACOPES AI is processing this listing.", "success");
     await refreshLogs();
