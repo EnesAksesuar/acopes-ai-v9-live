@@ -698,6 +698,19 @@ function selectedProducts() {
   return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)));
 }
 
+function rebuildSelectedListingIdsFromDom() {
+  const rebuiltIds = [...document.querySelectorAll('input[type="checkbox"]:checked')]
+    .map((checkbox) => checkbox.dataset.productId || checkbox.closest(".product-card")?.querySelector("[data-product-id]")?.dataset.productId || "")
+    .filter(Boolean)
+    .map(String);
+  console.log("REBUILT IDS", rebuiltIds);
+  if (rebuiltIds.length) {
+    selectedListingIds.clear();
+    rebuiltIds.forEach((id) => selectedListingIds.add(id));
+  }
+  return rebuiltIds;
+}
+
 function optimizedTitleFrom(after = {}, product = {}) {
   const title =
     after?.seo_title ||
@@ -1371,6 +1384,7 @@ async function initializeDashboard() {
 }
 
 sendSelectedBtn?.addEventListener("click", async () => {
+  rebuildSelectedListingIdsFromDom();
   console.log("GENERATE CLICKED", selectedListingIds);
   if (sendSelectedBtn.disabled && selectedProducts().length) sendSelectedBtn.disabled = false;
   const [product] = requireSelectedProducts();
