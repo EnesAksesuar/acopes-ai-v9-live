@@ -690,6 +690,11 @@ function pruneSelectedListings() {
 }
 
 function selectedProducts() {
+  if (!selectedListingIds.size) {
+    document.querySelectorAll("[data-product-id]:checked").forEach((checkbox) => {
+      if (checkbox.dataset.productId) selectedListingIds.add(String(checkbox.dataset.productId));
+    });
+  }
   return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)));
 }
 
@@ -1272,6 +1277,7 @@ async function sendSingle(product) {
   setStatus("Sending");
   sendSelectedBtn.disabled = true;
   try {
+    console.log("CALLING OPTIMIZATION ENDPOINT", product);
     const response = await fetch("/api/send", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1365,6 +1371,8 @@ async function initializeDashboard() {
 }
 
 sendSelectedBtn?.addEventListener("click", async () => {
+  console.log("GENERATE CLICKED", selectedListingIds);
+  if (sendSelectedBtn.disabled && selectedProducts().length) sendSelectedBtn.disabled = false;
   const [product] = requireSelectedProducts();
   if (!product) return;
   await sendSingle(product);
@@ -1501,6 +1509,7 @@ productsEl?.addEventListener("change", (event) => {
   } else {
     selectedListingIds.delete(productId);
   }
+  if (sendSelectedBtn) sendSelectedBtn.disabled = false;
   renderBatchDashboard();
   renderCommerceIntelligence();
 });
