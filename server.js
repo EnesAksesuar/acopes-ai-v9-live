@@ -2772,4 +2772,8 @@ if (!IS_VERCEL) {
   });
 }
 
+if (typeof module !== "undefined") {
+  module.exports = app;
+}
+
 export default app;
