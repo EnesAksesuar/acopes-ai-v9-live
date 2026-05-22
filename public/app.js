@@ -1278,7 +1278,7 @@ async function sendSingle(product) {
   sendSelectedBtn.disabled = true;
   try {
     console.log("CALLING OPTIMIZATION ENDPOINT", product);
-    const response = await fetch("/api/send", {
+    const response = await fetch("/api/optimize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ product })

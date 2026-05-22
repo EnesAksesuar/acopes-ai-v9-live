@@ -1602,6 +1602,19 @@ app.get("/api/listings", async (req, res) => {
   }
 });
 
+app.post("/api/optimize", async (req, res) => {
+  await incrementAnalytics("optimization_started");
+  const product = req.body.product || req.body.listing || {};
+  const log = await sendToMake(product);
+  const user = await getSessionUser(req.session);
+  const responseBody = successResponse(
+    buildOptimizationResponsePayload(product, log, sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) })),
+    log.status === "completed" ? "Optimization queued" : "Optimization generated with fallback"
+  );
+  console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
+  res.status(200).json(responseBody);
+});
+
 app.post("/api/send", async (req, res) => {
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
