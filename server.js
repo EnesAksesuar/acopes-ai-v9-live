@@ -7,6 +7,10 @@ import nodeCrypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
+process.on("unhandledRejection", (err) => {
+  console.error("UNHANDLED:", err?.stack || err);
+});
+
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 dotenv.config({ path: path.join(__dirname, ".env") });
 console.log("ENV DEBUG", {
@@ -195,9 +199,23 @@ async function persistRequestEtsyAuth(req, res, tokens = {}) {
   return auth;
 }
 
+function sessionRecordId(session = {}) {
+  return session.acopes_session_id || session.legacy_session_id || session.id || "";
+}
+
+function applySessionRecord(target = {}, record = {}) {
+  for (const [key, value] of Object.entries(record || {})) {
+    if (key === "id") {
+      if (!target.acopes_session_id) target.acopes_session_id = value;
+      continue;
+    }
+    if (target[key] === undefined || target[key] === "") target[key] = value;
+  }
+}
+
 app.use(async (req, res, next) => {
   const cookies = parseCookies(req.headers.cookie || "");
-  let sessionId = req.session.id || cookies.edel_beta_sid || req.sessionID;
+  let sessionId = req.session.acopes_session_id || cookies.edel_beta_sid || req.sessionID;
   const sessions = await readJsonFile(sessionsPath);
   let session = sessions.find((item) => item.id === sessionId);
   if (!session) {
@@ -215,10 +233,8 @@ app.use(async (req, res, next) => {
     await writeJsonFile(sessionsPath, sessions);
     res.setHeader("Set-Cookie", `edel_beta_sid=${encodeURIComponent(sessionId)}; Path=/; SameSite=Lax`);
   }
-  for (const [key, value] of Object.entries(session)) {
-    if (req.session[key] === undefined || req.session[key] === "") req.session[key] = value;
-  }
-  req.session.id = sessionId;
+  applySessionRecord(req.session, session);
+  req.session.acopes_session_id = sessionId;
   next();
 });
 
@@ -412,10 +428,10 @@ async function updateUser(userId, patch) {
 }
 
 async function saveUserEtsyAuth(session, tokens = {}) {
-  const email = normalizeEmail(session.email || `session-${session.id}@local.acopes`);
+  const email = normalizeEmail(session.email || `session-${sessionRecordId(session)}@local.acopes`);
   const user = await getOrCreateUser(email);
   const updated = await updateUser(user.id, { etsy_auth: publicEtsyAuth(tokens) });
-  const updatedSession = await updateSession(session.id, {
+  const updatedSession = await updateSession(sessionRecordId(session), {
     user_id: user.id,
     email,
     onboarding_completed: session.onboarding_completed,
@@ -1930,12 +1946,12 @@ async function discoverEtsyShop(tokens, context = {}) {
   });
   await writeEtsyTokens(updated);
   if (context.req?.session) {
-    const updatedSession = await updateSession(context.req.session.id, {
+    const updatedSession = await updateSession(sessionRecordId(context.req.session), {
       etsy_shop_id: updated.shop_id,
       etsy_shop_name: updated.shop_name,
       etsy_shop_url: updated.shop_url
     });
-    if (updatedSession) Object.assign(context.req.session, updatedSession);
+    if (updatedSession) applySessionRecord(context.req.session, updatedSession);
     await saveUserEtsyAuth(context.req.session, updated);
   }
   if (context.res) setEtsyAuthCookie(context.res, updated);
@@ -2131,7 +2147,7 @@ async function startEtsyOAuth(req, res) {
   }
   const { verifier, challenge } = createPkcePair();
   const state = crypto.randomUUID();
-  await updateSession(req.session.id, {
+  await updateSession(sessionRecordId(req.session), {
     etsy_oauth_state: state,
     etsy_code_verifier: verifier,
     etsy_oauth_started_at: new Date().toISOString()
@@ -2192,7 +2208,7 @@ async function finishEtsyOAuth(req, res) {
       scope: payload.scope || ETSY_SCOPES,
       expires_in: payload.expires_in || 3600
     });
-    await updateSession(req.session.id, {
+    await updateSession(sessionRecordId(req.session), {
       etsy_oauth_state: "",
       etsy_code_verifier: "",
       etsy_connected_at: new Date().toISOString()
@@ -2316,13 +2332,14 @@ app.post("/api/onboarding", async (req, res) => {
   }
 
   const user = await getOrCreateUser(email);
-  const session = await updateSession(req.session.id, {
+  const session = await updateSession(sessionRecordId(req.session), {
     onboarding_completed: true,
     store_name: req.body.store_name || "",
     email,
     user_id: user.id
   });
-  Object.assign(req.session, session || {}, {
+  applySessionRecord(req.session, session || {});
+  Object.assign(req.session, {
     onboarding_completed: true,
     store_name: req.body.store_name || "",
     email,
@@ -2704,7 +2721,7 @@ app.post("/api/paddle-webhook-test", async (req, res) => {
 
   let session = req.session;
   if (normalizeEmail(req.session.email) === email || !req.session.email) {
-    session = await updateSession(req.session.id, {
+    session = await updateSession(sessionRecordId(req.session), {
       email,
       user_id: updatedUser.id,
       onboarding_completed: true
