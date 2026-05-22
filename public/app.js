@@ -660,6 +660,12 @@ function showUpgradeModal(plan = "") {
 }
 
 function renderSession(session) {
+  session = {
+    ...session,
+    onboarding_completed: Boolean(session.onboarding_completed || session.data?.onboarding_completed),
+    email_required: Boolean(session.email_required ?? session.data?.email_required),
+    email: session.email || session.data?.email || ""
+  };
   currentSession = session;
   const credits = session.credits_remaining ?? session.free_remaining;
   usagePillEl.textContent = session.email_required ? "Sign in for credits" : `${credits} credits`;
@@ -685,7 +691,7 @@ function renderSession(session) {
     <small>${escapeHtml(creditNote)}</small>
     ${lockedFeatures}
   `;
-  onboardingPanelEl.hidden = session.onboarding_completed && !session.email_required;
+  onboardingPanelEl.hidden = Boolean(session.onboarding_completed && !session.email_required);
   if (session.dev_mode || IS_DEV_HOST) upgradeModalEl.hidden = true;
   else if (session.limit_reached) upgradeModalEl.hidden = false;
   renderTopKpis(optimizationRecords);
@@ -1838,11 +1844,14 @@ upgradeModalEl?.addEventListener("click", (event) => {
 
 onboardingFormEl?.addEventListener("submit", async (event) => {
   event.preventDefault();
+  console.log("Continue to dashboard clicked");
   debugLog("onboarding submit fired");
   const data = Object.fromEntries(new FormData(onboardingFormEl));
   const submitButton = onboardingFormEl.querySelector("button");
-  if (!data.email || !String(data.email).includes("@")) {
-    showToast("Enter a valid email to start the beta workspace.", "error");
+  const shopName = String(data.shop_name || data.store_name || "").trim();
+  const email = String(data.email || "").trim();
+  if (!shopName || !email) {
+    showToast("Enter your shop name and email to continue.", "error");
     return;
   }
   setStatus("Processing");
@@ -1851,7 +1860,7 @@ onboardingFormEl?.addEventListener("submit", async (event) => {
     const response = await fetch("/api/onboarding", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(data)
+      body: JSON.stringify({ shop_name: shopName, store_name: shopName, email })
     });
     const result = await parseJsonResponse(response);
     debugLog("onboarding api response received", result);
@@ -1861,7 +1870,15 @@ onboardingFormEl?.addEventListener("submit", async (event) => {
       setStatus("Failed");
       return;
     }
-    renderSession(sessionPayload);
+    const normalizedSession = {
+      ...sessionPayload,
+      onboarding_completed: true,
+      email_required: false,
+      email: sessionPayload.email || email,
+      store_name: sessionPayload.store_name || shopName
+    };
+    renderSession(normalizedSession);
+    onboardingPanelEl.hidden = true;
     setStatus("Completed");
     showToast("Workspace ready. 15 free credits added.", "success");
     await initializeDashboard();
@@ -1882,6 +1899,7 @@ queueEl?.addEventListener("click", async (event) => {
 });
 
 refreshSession().then(async (session) => {
+  if (session?.onboarding_completed && !session.email_required) onboardingPanelEl.hidden = true;
   const requestedUpgrade = new URLSearchParams(window.location.search).get("upgrade");
   const etsyState = new URLSearchParams(window.location.search).get("etsy");
   if (requestedUpgrade) showUpgradeModal(requestedUpgrade);
