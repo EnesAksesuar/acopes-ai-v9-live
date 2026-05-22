@@ -1,5 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
+import session from "express-session";
+import sessionFileStore from "session-file-store";
 import fs from "node:fs/promises";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
@@ -14,6 +16,7 @@ console.log("ENV DEBUG", {
 });
 
 const app = express();
+const FileStore = sessionFileStore(session);
 await loadDotEnv(path.join(__dirname, ".env"));
 const PORT = process.env.PORT || 4173;
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -38,6 +41,7 @@ const waitlistPath = path.join(runtimeDataDir, "waitlist.json");
 const analyticsPath = path.join(runtimeDataDir, "analytics.json");
 const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
 const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
+const sessionStorePath = path.join(runtimeDataDir, "sessions");
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || "").trim();
 const ETSY_CLIENT_SECRET = (process.env.ETSY_CLIENT_SECRET || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
@@ -86,6 +90,22 @@ app.use((_req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   next();
 });
+app.use(session({
+  store: new FileStore({
+    path: sessionStorePath,
+    retries: 0,
+    ttl: 7 * 24 * 60 * 60
+  }),
+  name: "acopes.sid",
+  secret: process.env.SESSION_SECRET || "acopes-secret",
+  resave: false,
+  saveUninitialized: false,
+  cookie: {
+    secure: process.env.NODE_ENV === "production",
+    sameSite: "lax",
+    maxAge: 7 * 24 * 60 * 60 * 1000
+  }
+}));
 app.use(express.static(path.join(__dirname, "public")));
 
 function parseCookies(header = "") {
@@ -177,11 +197,11 @@ async function persistRequestEtsyAuth(req, res, tokens = {}) {
 
 app.use(async (req, res, next) => {
   const cookies = parseCookies(req.headers.cookie || "");
-  let sessionId = cookies.edel_beta_sid;
+  let sessionId = req.session.id || cookies.edel_beta_sid || req.sessionID;
   const sessions = await readJsonFile(sessionsPath);
   let session = sessions.find((item) => item.id === sessionId);
   if (!session) {
-    sessionId = crypto.randomUUID();
+    sessionId = req.sessionID || crypto.randomUUID();
     session = {
       id: sessionId,
       created_at: new Date().toISOString(),
@@ -195,7 +215,10 @@ app.use(async (req, res, next) => {
     await writeJsonFile(sessionsPath, sessions);
     res.setHeader("Set-Cookie", `edel_beta_sid=${encodeURIComponent(sessionId)}; Path=/; SameSite=Lax`);
   }
-  req.session = session;
+  for (const [key, value] of Object.entries(session)) {
+    if (req.session[key] === undefined || req.session[key] === "") req.session[key] = value;
+  }
+  req.session.id = sessionId;
   next();
 });
 
@@ -205,7 +228,7 @@ app.use(async (req, _res, next) => {
     return;
   }
   req.user = await getSessionUser(req.session);
-  req.etsyAuth = req.user?.etsy_auth || {};
+  req.etsyAuth = req.session?.etsy_auth || req.user?.etsy_auth || {};
   next();
 });
 
@@ -224,6 +247,16 @@ function sessionEmail(req) {
 function belongsToSessionEmail(item = {}, req) {
   const email = sessionEmail(req);
   return Boolean(email && normalizeEmail(item.email) === email);
+}
+
+function saveExpressSession(req) {
+  return new Promise((resolve) => {
+    if (!req?.session?.save) {
+      resolve();
+      return;
+    }
+    req.session.save(() => resolve());
+  });
 }
 
 async function ensureLogsFile() {
@@ -389,6 +422,10 @@ async function saveUserEtsyAuth(session, tokens = {}) {
     store_name: session.store_name || ""
   });
   if (updatedSession) Object.assign(session, updatedSession);
+  session.email = updated.email;
+  session.user_id = updated.id;
+  session.etsy_auth = updated.etsy_auth;
+  if (typeof session.save === "function") await new Promise((resolve) => session.save(() => resolve()));
   etsyDebug("Persisted Etsy auth for user", {
     email,
     user_id: publicEtsyAuth(tokens).user_id || "",
@@ -2099,6 +2136,10 @@ async function startEtsyOAuth(req, res) {
     etsy_code_verifier: verifier,
     etsy_oauth_started_at: new Date().toISOString()
   });
+  req.session.etsy_oauth_state = state;
+  req.session.etsy_code_verifier = verifier;
+  req.session.etsy_oauth_started_at = new Date().toISOString();
+  await saveExpressSession(req);
   setOauthCookie(res, "acopes_etsy_oauth_state", state);
   setOauthCookie(res, "acopes_etsy_code_verifier", verifier);
   etsyDebug("Starting Etsy OAuth request", { scopes: ETSY_SCOPES, redirect_uri: ETSY_REDIRECT_URI });
@@ -2156,6 +2197,10 @@ async function finishEtsyOAuth(req, res) {
       etsy_code_verifier: "",
       etsy_connected_at: new Date().toISOString()
     });
+    req.session.etsy_oauth_state = "";
+    req.session.etsy_code_verifier = "";
+    req.session.etsy_connected_at = new Date().toISOString();
+    await saveExpressSession(req);
     let resolvedTokens = tokens;
     try {
       resolvedTokens = await discoverEtsyShop(tokens, { req, res });
@@ -2277,6 +2322,14 @@ app.post("/api/onboarding", async (req, res) => {
     email,
     user_id: user.id
   });
+  Object.assign(req.session, session || {}, {
+    onboarding_completed: true,
+    store_name: req.body.store_name || "",
+    email,
+    user_id: user.id,
+    etsy_auth: user.etsy_auth || req.session.etsy_auth || null
+  });
+  await saveExpressSession(req);
   res.json(successResponse(sessionSummary(session, user, { dev_mode: isDevelopmentBypass(req) }), "Onboarding completed"));
 });
 
@@ -2312,7 +2365,7 @@ app.get("/api/queue", requireUser, async (req, res) => {
 
 app.get("/api/listings", requireUser, async (req, res) => {
   try {
-    const userTokens = req.user?.etsy_auth || {};
+    const userTokens = req.session?.etsy_auth || req.user?.etsy_auth || {};
     etsyDebug("Listings auth snapshot", {
       hasAccessToken: Boolean(userTokens.access_token),
       hasRefreshToken: Boolean(userTokens.refresh_token),
