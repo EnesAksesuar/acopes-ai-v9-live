@@ -145,6 +145,7 @@ button.ghost:hover { border-color: rgba(229, 200, 146, 0.5); background: rgba(22
 .optimization-card, .history-sidebar article, .queue-item, .log { border-radius: 12px; background: rgba(255, 255, 255, 0.03); border: 1px solid var(--line); padding: 18px; transition: border-color .2s ease, background .2s ease; }
 .draft-status { text-transform: capitalize; padding: 6px 10px; border-radius: 999px; color: var(--muted); background: rgba(255, 255, 255, 0.06); }
 .draft-status.approved_draft { color: var(--success); }
+.source-badge { display: inline-flex; width: fit-content; align-items: center; gap: 6px; margin-top: 6px; padding: 5px 9px; border-radius: 999px; color: var(--gold); background: rgba(229, 200, 146, .12); border: 1px solid rgba(229, 200, 146, .28); font-size: 11px; font-weight: 700; letter-spacing: 0; }
 .optimization-body { display: grid; grid-template-columns: minmax(0, 1fr) 250px; gap: 14px; margin-top: 14px; }
 .score-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-bottom: 12px; }
 .secondary-compare { margin-top: 10px; }
@@ -336,7 +337,16 @@ button.ghost:hover { border-color: rgba(229, 200, 146, 0.5); background: rgba(22
 .log-meta span { color: var(--muted); }
 .log-actions { display: flex; gap: 10px; align-items: center; }
 .empty { position: relative; overflow: hidden; border: 1px dashed var(--line); border-radius: 12px; padding: 16px; color: var(--muted); }
-.empty::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent); animation: skeleton-sheen 2.4s infinite; }
+.empty::after { content: ""; position: absolute; inset: 0; transform: translateX(-100%); background: linear-gradient(90deg, transparent, rgba(255,255,255,.05), transparent); animation: skeleton-sheen 2.4s infinite; pointer-events: none; }
+.etsy-connect-empty { display: grid; gap: 10px; justify-items: start; padding: 22px; background: linear-gradient(135deg, rgba(229, 200, 146, .12), rgba(255,255,255,.035)); }
+.etsy-connect-empty strong { color: var(--text); font-size: 1.05rem; }
+.etsy-connect-empty button { position: relative; z-index: 1; background: var(--gold); color: #15120d; box-shadow: 0 14px 30px rgba(229, 200, 146, .18); }
+.etsy-connect-empty button:hover { transform: translateY(-1px); box-shadow: 0 18px 38px rgba(229, 200, 146, .28); }
+.etsy-connect-banner { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin: 0 0 18px; padding: 18px 20px; border: 1px solid rgba(229, 200, 146, .35); border-radius: 16px; background: linear-gradient(135deg, rgba(229, 200, 146, .16), rgba(255,255,255,.045)); box-shadow: 0 18px 48px rgba(0,0,0,.22); }
+.etsy-connect-banner[hidden] { display: none; }
+.etsy-connect-banner h2 { margin: 2px 0 4px; }
+.etsy-connect-banner p { margin: 0; color: var(--muted); }
+.etsy-connect-banner button { background: var(--gold); color: #15120d; white-space: nowrap; }
 .usage-pill { border-radius: 8px; padding: 11px 14px; border: 1px solid var(--line); color: var(--gold); }
 .onboarding:not([hidden]) {
   position: fixed;

@@ -1,11 +1,19 @@
+import dotenv from "dotenv";
 import express from "express";
 import fs from "node:fs/promises";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const app = express();
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+dotenv.config({ path: path.join(__dirname, ".env") });
+console.log("ENV DEBUG", {
+  hasClientId: Boolean(process.env.ETSY_CLIENT_ID),
+  hasClientSecret: Boolean(process.env.ETSY_CLIENT_SECRET),
+  secretLength: process.env.ETSY_CLIENT_SECRET?.length || 0
+});
+
+const app = express();
 await loadDotEnv(path.join(__dirname, ".env"));
 const PORT = process.env.PORT || 4173;
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -31,8 +39,9 @@ const analyticsPath = path.join(runtimeDataDir, "analytics.json");
 const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
 const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || "").trim();
+const ETSY_CLIENT_SECRET = (process.env.ETSY_CLIENT_SECRET || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
-const ETSY_SCOPES = (process.env.ETSY_SCOPES || "listings_r shops_r").trim();
+const ETSY_SCOPES = (process.env.ETSY_SCOPES || "listings_r listings_w shops_r").trim();
 const ETSY_AUTH_URL = "https://www.etsy.com/oauth/connect";
 const ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token";
 const ETSY_API_BASE = "https://api.etsy.com/v3/application";
@@ -43,6 +52,8 @@ const ETSY_ACCESS_TOKEN_ENV = (process.env.ETSY_ACCESS_TOKEN || "").trim();
 const ETSY_REFRESH_TOKEN_ENV = (process.env.ETSY_REFRESH_TOKEN || "").trim();
 const ETSY_TOKEN_EXPIRES_AT_ENV = (process.env.ETSY_TOKEN_EXPIRES_AT || "").trim();
 const ETSY_SHOP_ID_ENV = (process.env.ETSY_SHOP_ID || "").trim();
+console.log("ETSY_CLIENT_ID first 6 chars:", process.env.ETSY_CLIENT_ID?.slice(0, 6) || "");
+console.log("ETSY_CLIENT_SECRET exists:", Boolean(process.env.ETSY_CLIENT_SECRET));
 const FREE_OPTIMIZATION_LIMIT = 15;
 const ETSY_REFRESH_WINDOW_MS = 5 * 60 * 1000;
 const PLAN_CREDITS = {
@@ -117,6 +128,7 @@ function publicEtsyAuth(tokens = {}) {
     access_token: tokens.access_token || "",
     refresh_token: tokens.refresh_token || "",
     expires_at: tokens.expires_at || 0,
+    user_id: tokens.user_id || "",
     shop_id: tokens.shop_id || "",
     shop_name: tokens.shop_name || "",
     shop_url: tokens.shop_url || "",
@@ -144,11 +156,30 @@ function clearEtsyAuthCookie(res) {
   appendSetCookie(res, `acopes_etsy_auth=; ${authCookieOptions(0)}`);
 }
 
+function setOauthCookie(res, name, value, maxAge = 600) {
+  appendSetCookie(res, `${name}=${encodeURIComponent(value || "")}; ${authCookieOptions(maxAge)}`);
+}
+
+function clearOauthCookies(res) {
+  setOauthCookie(res, "acopes_etsy_oauth_state", "", 0);
+  setOauthCookie(res, "acopes_etsy_code_verifier", "", 0);
+}
+
 async function persistEtsyAuth(res, tokens = {}) {
   const auth = publicEtsyAuth(tokens);
   globalThis.etsyAuthStore = auth;
   await writeEtsyTokens(auth);
   setEtsyAuthCookie(res, auth);
+  return auth;
+}
+
+async function persistRequestEtsyAuth(req, res, tokens = {}) {
+  const auth = await persistEtsyAuth(res, tokens);
+  if (req?.session) {
+    const user = await saveUserEtsyAuth(req.session, auth);
+    req.user = user;
+    req.etsyAuth = user?.etsy_auth || auth;
+  }
   return auth;
 }
 
@@ -173,6 +204,16 @@ app.use(async (req, res, next) => {
     res.setHeader("Set-Cookie", `edel_beta_sid=${encodeURIComponent(sessionId)}; Path=/; SameSite=Lax`);
   }
   req.session = session;
+  next();
+});
+
+app.use(async (req, _res, next) => {
+  if (!req.path.startsWith("/api/") && !req.path.startsWith("/auth/")) {
+    next();
+    return;
+  }
+  req.user = await getSessionUser(req.session);
+  req.etsyAuth = req.user?.etsy_auth || readEtsyAuthCookie(req);
   next();
 });
 
@@ -328,6 +369,26 @@ async function updateUser(userId, patch) {
   return user;
 }
 
+async function saveUserEtsyAuth(session, tokens = {}) {
+  const email = normalizeEmail(session.email || `session-${session.id}@local.acopes`);
+  const user = await getOrCreateUser(email);
+  const updated = await updateUser(user.id, { etsy_auth: publicEtsyAuth(tokens) });
+  const updatedSession = await updateSession(session.id, {
+    user_id: user.id,
+    email,
+    onboarding_completed: session.onboarding_completed,
+    store_name: session.store_name || ""
+  });
+  if (updatedSession) Object.assign(session, updatedSession);
+  etsyDebug("Persisted Etsy auth for user", {
+    email,
+    user_id: publicEtsyAuth(tokens).user_id || "",
+    shop_id: publicEtsyAuth(tokens).shop_id || "",
+    hasAccessToken: Boolean(tokens.access_token)
+  });
+  return updated;
+}
+
 function isDevelopmentBypass(req = null) {
   const host = String(req?.headers?.host || "");
   const origin = String(req?.headers?.origin || "");
@@ -430,6 +491,10 @@ function numberOrUndefined(value) {
   return Number.isFinite(number) ? number : undefined;
 }
 
+function clampScore(value) {
+  return Math.max(0, Math.min(100, Math.round(Number(value) || 0)));
+}
+
 function normalizeListingId(value = "") {
   return String(value ?? "").trim();
 }
@@ -493,9 +558,13 @@ function isAuthorizedMakeResponse(req) {
 }
 
 function buildPayload(product) {
+  const detectedProductType = detectJewelryProductType(product);
   return {
     product_name: product.name,
-    product_type: product.type,
+    product_type: detectedProductType || product.type,
+    detected_product_type: detectedProductType,
+    strict_jewelry_taxonomy: true,
+    ai_system_rule: "Never change the original jewelry product category.",
     style: product.style,
     target_market: "USA",
     brand: "Edel Luxe",
@@ -565,23 +634,122 @@ function normalizeOptimization(input = {}) {
       thumbnail_score: numberOrUndefined(merged.thumbnail_score),
       tag_quality_score: numberOrUndefined(merged.tag_score ?? merged.tag_quality_score),
       alt_text_score: numberOrUndefined(merged.alt_text_score)
-    }
+    },
+    taxonomy_validation: merged.taxonomy_validation || null,
+    final_output_source: typeof merged.final_output_source === "string" ? merged.final_output_source : ""
+  };
+}
+
+const JEWELRY_PRODUCT_TYPES = ["necklace", "ring", "bracelet", "earrings", "pendant", "anklet", "choker"];
+
+function detectJewelryProductType(listing = {}) {
+  const text = `${listing.product_type || ""} ${listing.type || ""} ${listing.title || ""} ${listing.name || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
+  const patterns = [
+    ["chain necklace", "necklace"],
+    ["pendant necklace", "necklace"],
+    ["necklace", "necklace"],
+    ["choker", "choker"],
+    ["earrings", "earrings"],
+    ["earring", "earrings"],
+    ["bracelet", "bracelet"],
+    ["anklet", "anklet"],
+    ["pendant", "pendant"],
+    ["ring", "ring"]
+  ];
+  return patterns.find(([pattern]) => new RegExp(`\\b${pattern}\\b`, "i").test(text))?.[1] || "";
+}
+
+function productTypeTerms(type = "") {
+  const normalized = String(type || "").toLowerCase();
+  if (normalized === "necklace") return ["necklace", "chain necklace", "pendant necklace"];
+  if (normalized === "earrings") return ["earrings", "earring"];
+  return normalized ? [normalized] : [];
+}
+
+function originalKeywords(listing = {}) {
+  const blocked = new Set(["for", "and", "with", "the", "gift", "women", "woman", "jewelry", "jewellery", "minimal", "minimalist", "dainty", "gold", "silver"]);
+  return Array.from(new Set(String(listing.title || listing.name || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, " ")
+    .split(/\s+/)
+    .filter((word) => word.length > 3 && !blocked.has(word))));
+}
+
+function carriedKeywordCount(listing = {}, title = "") {
+  const lowerTitle = String(title || "").toLowerCase();
+  return originalKeywords(listing).filter((word) => lowerTitle.includes(word)).length;
+}
+
+function validateJewelryOptimization(optimized = {}, listing = {}) {
+  const detectedProductType = detectJewelryProductType(listing);
+  const title = String(optimized.seo_title || optimized.optimized_title || "").toLowerCase();
+  const description = String(optimized.description || optimized.optimized_description || "").toLowerCase();
+  const tags = (optimized.tags || optimized.optimized_tags || []).map((tag) => String(tag).toLowerCase());
+  const requiredTerms = productTypeTerms(detectedProductType);
+  const productText = `${title} ${description} ${tags.join(" ")}`;
+  const categoryPreserved = !requiredTerms.length || requiredTerms.some((term) => productText.includes(term));
+  const titleCategoryPreserved = !requiredTerms.length || requiredTerms.some((term) => title.includes(term));
+  const mismatchedType = JEWELRY_PRODUCT_TYPES.some((type) => {
+    if (!detectedProductType || type === detectedProductType) return false;
+    return productTypeTerms(type).some((term) => title.includes(term));
+  });
+  const carryOver = carriedKeywordCount(listing, title);
+  const genericTitle = /minimal everyday jewelry|gold minimal ring|minimal ring/i.test(optimized.seo_title || optimized.optimized_title || "");
+  const valid = Boolean(title) && categoryPreserved && titleCategoryPreserved && !mismatchedType && !genericTitle && carryOver >= Math.min(2, originalKeywords(listing).length || 2);
+  const result = {
+    valid,
+    detected_product_type: detectedProductType,
+    category_preserved: categoryPreserved,
+    title_category_preserved: titleCategoryPreserved,
+    mismatched_type: mismatchedType,
+    carried_keywords: carryOver,
+    generic_title: genericTitle
+  };
+  console.log("[OPTIMIZATION DEBUG]", {
+    detected_product_type: detectedProductType,
+    validation_result: result,
+    retry_triggered: false,
+    final_output_valid: valid
+  });
+  return result;
+}
+
+function enforceProductTypeInContent(candidate = {}, detectedProductType = "") {
+  if (!detectedProductType) return candidate;
+  const typeLabel = detectedProductType === "earrings" ? "earrings" : detectedProductType;
+  const description = String(candidate.description || candidate.optimized_description || "");
+  const tags = Array.isArray(candidate.tags) ? candidate.tags : [];
+  const updatedTags = tags.some((tag) => String(tag).toLowerCase().includes(typeLabel))
+    ? tags
+    : [typeLabel, ...tags].slice(0, 13);
+  const updatedDescription = description.toLowerCase().includes(typeLabel)
+    ? description
+    : `${description} This ${typeLabel} keeps the original jewelry category accurate for Etsy search.`;
+  return {
+    ...candidate,
+    description: updatedDescription,
+    optimized_description: updatedDescription,
+    tags: updatedTags,
+    optimized_tags: updatedTags
   };
 }
 
 function fallbackOptimizedTitle(listing = {}) {
   const text = `${listing.title || listing.name || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
   const material = text.includes("pearl") ? "Pearl" : text.includes("silver") ? "Silver" : "Gold";
-  const type = text.includes("bracelet") ? "Bracelet" : text.includes("earring") ? "Earrings" : text.includes("ring") ? "Ring" : "Necklace";
-  const style = text.includes("herringbone") ? "Herringbone Chain" : text.includes("paperclip") ? "Paperclip Chain" : text.includes("heart") ? "Heart" : text.includes("box") ? "Box Chain" : "Minimal";
-  return `${material} ${style} ${type}, Minimal Everyday Jewelry`;
+  const detectedType = detectJewelryProductType(listing) || "necklace";
+  const type = detectedType === "earrings" ? "Earrings" : detectedType.charAt(0).toUpperCase() + detectedType.slice(1);
+  const style = text.includes("herringbone") ? "Herringbone Chain" : text.includes("paperclip") ? "Paperclip Chain" : text.includes("heart") ? "Heart" : text.includes("box") ? "Box Chain" : text.includes("chain") ? "Chain" : "Minimal";
+  return `${material} ${style} ${type}, Minimal Layering Jewelry`;
 }
 
 function ensureOptimizationContent(optimized = {}, listing = {}) {
-  const title = optimized.seo_title || optimized.optimized_title || fallbackOptimizedTitle(listing);
-  const description = optimized.description || optimized.optimized_description || `${title} designed for minimalist Etsy styling, everyday wear, and gift-ready jewelry positioning.`;
-  const tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : ["minimal jewelry", "gold necklace", "gift for her", "dainty jewelry", "everyday necklace", "layering necklace", "quiet luxury"];
-  return {
+  const detectedProductType = detectJewelryProductType(listing);
+  let finalOutputSource = optimized.final_output_source || "ai_valid";
+  let title = optimized.seo_title || optimized.optimized_title || fallbackOptimizedTitle(listing);
+  let tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : ["minimal jewelry", `${detectedProductType || "necklace"}`, "gift for her", "dainty jewelry", `everyday ${detectedProductType || "necklace"}`, "layering necklace", "quiet luxury"];
+  let description = optimized.description || optimized.optimized_description || `${title} designed for minimalist Etsy styling, everyday wear, and gift-ready jewelry positioning.`;
+  let candidate = {
     ...optimized,
     seo_title: title,
     optimized_title: title,
@@ -589,6 +757,55 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
     optimized_description: description,
     tags,
     optimized_tags: tags
+  };
+  candidate = enforceProductTypeInContent(candidate, detectedProductType);
+  const validation = validateJewelryOptimization(candidate, listing);
+  if (!validation.valid) {
+    finalOutputSource = "safe_fallback";
+    title = fallbackOptimizedTitle(listing);
+    const typeTerm = detectedProductType || "necklace";
+    tags = Array.from(new Set([
+      `${typeTerm}`,
+      `gold ${typeTerm}`,
+      `dainty ${typeTerm}`,
+      `everyday ${typeTerm}`,
+      "quiet luxury",
+      "gift for her",
+      "minimal jewelry",
+      "layering necklace",
+      "birthday gift",
+      "bridesmaid gift",
+      "timeless jewelry",
+      "old money style",
+      "elegant jewelry"
+    ])).slice(0, 13);
+    description = `${title} designed for quiet luxury styling, everyday wear, and gift-ready Etsy search intent. This ${typeTerm} keeps the original product category accurate while improving mobile title clarity and buyer confidence.`;
+    candidate = {
+      ...optimized,
+      seo_title: title,
+      optimized_title: title,
+      description,
+      optimized_description: description,
+      tags,
+      optimized_tags: tags,
+      taxonomy_validation: validation,
+      strict_jewelry_taxonomy: true,
+      final_output_source: finalOutputSource
+    };
+    const finalValidation = validateJewelryOptimization(candidate, listing);
+    candidate.taxonomy_validation = finalValidation;
+    console.log("[OPTIMIZATION DEBUG]", {
+      detected_product_type: detectedProductType,
+      validation_result: finalValidation,
+      retry_triggered: true,
+      final_output_valid: finalValidation.valid
+    });
+  }
+  return {
+    ...candidate,
+    detected_product_type: detectedProductType,
+    strict_jewelry_taxonomy: true,
+    final_output_source: finalOutputSource
   };
 }
 
@@ -603,9 +820,61 @@ function buildOptimizationResponsePayload(product = {}, log = {}, session = {}) 
     seo_title: optimized.seo_title,
     optimized_description: optimized.optimized_description,
     optimized_tags: optimized.optimized_tags,
+    final_output_source: optimized.final_output_source,
+    validation_result: optimized.taxonomy_validation,
+    final_output_valid: optimized.taxonomy_validation?.valid !== false,
     analysis: scoreOptimization(optimized),
     session
   };
+}
+
+function rawOptimizationValid(product = {}, log = {}) {
+  const raw = normalizeOptimization(log.optimization_record?.after || log.make_response?.parsed || log.make_response?.body || {});
+  return validateJewelryOptimization(raw, product).valid;
+}
+
+function rawOptimizationFromLog(log = {}) {
+  return normalizeOptimization(log.optimization_record?.after || log.make_response?.parsed || log.make_response?.body || {});
+}
+
+async function attachFinalOptimizationRecord(log = {}, product = {}, optimized = {}, source = "ai_valid") {
+  const finalOptimized = ensureOptimizationContent({ ...optimized, final_output_source: source }, product);
+  log.optimization_record = await createOptimizationRecord({
+    listing: product,
+    optimized: finalOptimized,
+    request_log_id: log.id
+  });
+  log.optimized_title = finalOptimized.seo_title || finalOptimized.optimized_title || "";
+  log.seo_title = finalOptimized.seo_title;
+  log.optimized_description = finalOptimized.optimized_description || finalOptimized.description || "";
+  log.optimized_tags = finalOptimized.optimized_tags || finalOptimized.tags || [];
+  log.final_output_source = finalOptimized.final_output_source || source;
+  log.final_output_valid = finalOptimized.taxonomy_validation?.valid !== false;
+  log.validation_result = finalOptimized.taxonomy_validation || null;
+  return log;
+}
+
+async function sendToMakeWithTaxonomyRetry(product = {}) {
+  const firstLog = await sendToMake(product);
+  const firstRaw = rawOptimizationFromLog(firstLog);
+  const firstValidation = validateJewelryOptimization(firstRaw, product);
+  if (firstValidation.valid) return attachFinalOptimizationRecord(firstLog, product, firstRaw, "ai_valid");
+  console.log("[OPTIMIZATION DEBUG]", {
+    detected_product_type: detectJewelryProductType(product),
+    validation_result: firstValidation,
+    retry_triggered: true,
+    final_output_valid: false
+  });
+  const retryLog = await sendToMake({
+    ...product,
+    strict_jewelry_taxonomy: true,
+    ai_system_rule: "Never change the original jewelry product category."
+  });
+  const retryRaw = rawOptimizationFromLog(retryLog);
+  const retryValidation = validateJewelryOptimization(retryRaw, product);
+  if (retryValidation.valid) return attachFinalOptimizationRecord(retryLog, product, retryRaw, "ai_retry_valid");
+  const fallbackLog = retryLog.status === "completed" ? retryLog : firstLog;
+  return attachFinalOptimizationRecord(fallbackLog, product, {}, "safe_fallback");
 }
 
 function scoreOptimization(optimized = {}, scoreOverrides = {}) {
@@ -619,6 +888,11 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
   const giftPhraseMatches = lowerTitle.match(/gift for her|birthday gift|bridesmaid jewelry|quiet luxury gift|anniversary gift|meaningful gift/g) || [];
   const repeatedGiftTerms = new Set(giftPhraseMatches).size !== giftPhraseMatches.length || giftPhraseMatches.length > 1;
   const spamSeparators = (title.match(/,|\||-/g) || []).length;
+  const taxonomy = optimized.taxonomy_validation || {};
+  const categoryPenalty = taxonomy.valid === false ? 45 : 0;
+  const genericPenalty = taxonomy.generic_title ? 30 : /minimal everyday jewelry|gold minimal ring|minimal ring/i.test(title) ? 30 : 0;
+  const primaryKeywordPenalty = taxonomy.category_preserved === false || taxonomy.title_category_preserved === false ? 35 : 0;
+  const carryPenalty = Number(taxonomy.carried_keywords) >= 2 || taxonomy.valid !== false ? 0 : 25;
   const etsy_2026_title_score = Math.max(
     0,
     Math.min(
@@ -627,25 +901,33 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
         (title.length <= 95 ? 20 : 0) +
         (/necklace|bracelet|earrings|ring|jewelry/i.test(title) ? 20 : 0) +
         (!repeatedGiftTerms ? 15 : -20) +
-        (spamSeparators <= 2 ? 10 : -25)
+        (spamSeparators <= 2 ? 10 : -25) -
+        categoryPenalty -
+        genericPenalty
     )
   );
-  const seo_score = Math.min(
+  const seo_score = Math.max(0, Math.min(
     100,
     (title.length > 0 ? 20 : 0) +
       (titleWords.length <= 15 ? 20 : -10) +
       (/necklace|jewelry|pearl|gold|chain/i.test(title) ? 20 : 0) +
       (description.length > 180 ? 20 : 0) +
       (tags.length === 13 ? 25 : 0) +
-      (repeatedGiftTerms || spamSeparators > 3 ? -25 : 0)
-  );
-  const ctr_score = Math.min(
+      (repeatedGiftTerms || spamSeparators > 3 ? -25 : 0) -
+      categoryPenalty -
+      primaryKeywordPenalty -
+      carryPenalty -
+      genericPenalty
+  ));
+  const ctr_score = Math.max(0, Math.min(
     100,
     (/hero|thumbnail|mobile|large|clean|ivory|neutral/i.test(canva) ? 45 : 0) +
       (/quiet luxury|minimal|layering|pearl|gold/i.test(title) ? 25 : 0) +
       (titleWords.length <= 15 ? 15 : 0) +
-      (canva.length > 80 ? 15 : 0)
-  );
+      (canva.length > 80 ? 15 : 0) -
+      Math.round(categoryPenalty / 2) -
+      genericPenalty
+  ));
   const thumbnail_score = Math.min(
     100,
     (/65|70|75|mobile|ivory|neutral|no clutter|luxury/i.test(canva) ? 70 : 0) +
@@ -677,13 +959,15 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
       (title.length <= 72 ? 35 : title.length <= 95 ? 22 : 8) +
       (spamSeparators <= 2 ? 20 : 5)
   );
-  const buyer_intent_score = Math.min(
+  const buyer_intent_score = Math.max(0, Math.min(
     100,
     (/necklace|jewelry|chain|pearl|gold/i.test(title) ? 30 : 0) +
       (/gift|birthday|bridesmaid|anniversary|everyday|layer/i.test(description) ? 30 : 0) +
       (tags.some((tag) => /gift|birthday|bridesmaid|everyday|minimal|layer/i.test(tag)) ? 25 : 0) +
-      (/minimal|quiet luxury|dainty|timeless/i.test(`${title} ${description}`) ? 15 : 0)
-  );
+      (/minimal|quiet luxury|dainty|timeless/i.test(`${title} ${description}`) ? 15 : 0) -
+      primaryKeywordPenalty -
+      genericPenalty
+  ));
   const competition_score = Math.min(
     100,
     (/gold|pearl|necklace|chain/i.test(title) ? 55 : 35) +
@@ -691,10 +975,10 @@ function scoreOptimization(optimized = {}, scoreOverrides = {}) {
       (tags.length >= 10 ? 20 : tags.length) +
       (repeatedGiftTerms ? -15 : 5)
   );
-  const finalSeo = numberOrUndefined(scoreOverrides.seo_score ?? optimized.provided_scores?.seo_score) ?? seo_score;
-  const finalCtr = numberOrUndefined(scoreOverrides.ctr_score ?? optimized.provided_scores?.ctr_score) ?? ctr_score;
+  const finalSeo = clampScore((numberOrUndefined(scoreOverrides.seo_score ?? optimized.provided_scores?.seo_score) ?? seo_score) - categoryPenalty - primaryKeywordPenalty - genericPenalty);
+  const finalCtr = clampScore((numberOrUndefined(scoreOverrides.ctr_score ?? optimized.provided_scores?.ctr_score) ?? ctr_score) - Math.round(categoryPenalty / 2) - genericPenalty);
   const finalThumbnail = numberOrUndefined(scoreOverrides.thumbnail_score ?? optimized.provided_scores?.thumbnail_score) ?? thumbnail_score;
-  const finalTags = numberOrUndefined(scoreOverrides.tag_quality_score ?? optimized.provided_scores?.tag_quality_score) ?? tag_quality_score;
+  const finalTags = clampScore((numberOrUndefined(scoreOverrides.tag_quality_score ?? optimized.provided_scores?.tag_quality_score) ?? tag_quality_score) - primaryKeywordPenalty);
   const confidence_score = Math.round(
     finalSeo * 0.25 +
       finalCtr * 0.25 +
@@ -729,7 +1013,7 @@ function confidenceLabel(score = 0) {
 }
 
 async function createOptimizationRecord({ listing, optimized, source = "make_response", request_log_id = null }) {
-  const normalized = normalizeOptimization(optimized);
+  const normalized = ensureOptimizationContent(normalizeOptimization(optimized), listing);
   const scores = scoreOptimization(normalized);
   const record = {
     id: crypto.randomUUID(),
@@ -745,6 +1029,9 @@ async function createOptimizationRecord({ listing, optimized, source = "make_res
       image_url: listing.image_url
     },
     after: normalized,
+    final_output_source: normalized.final_output_source || "safe_fallback",
+    validation_result: normalized.taxonomy_validation || null,
+    final_output_valid: normalized.taxonomy_validation?.valid !== false,
     scores,
     confidence_label: confidenceLabel(scores.confidence_score),
     ai_change_reasons: [
@@ -945,6 +1232,14 @@ function etsyConfigured() {
   return Boolean(ETSY_CLIENT_ID);
 }
 
+function etsyApiHeaders(accessToken) {
+  const etsyApiKey = `${process.env.ETSY_CLIENT_ID}:${process.env.ETSY_CLIENT_SECRET}`;
+  return {
+    "x-api-key": etsyApiKey,
+    "Authorization": `Bearer ${accessToken}`
+  };
+}
+
 function etsyTokenUsable(tokens = {}) {
   return Boolean(tokens.access_token && tokens.expires_at && Number(tokens.expires_at) > Date.now() + ETSY_REFRESH_WINDOW_MS);
 }
@@ -1048,7 +1343,7 @@ async function refreshEtsyToken(tokens) {
   return updated;
 }
 
-async function ensureValidEtsyToken(tokens = null, res = null) {
+async function ensureValidEtsyToken(tokens = null, res = null, req = null) {
   tokens = tokens || await readEtsyTokens();
   if (!tokens.access_token) throw new Error("Etsy is not connected.");
   const isExpired = !etsyTokenUsable(tokens);
@@ -1064,11 +1359,13 @@ async function ensureValidEtsyToken(tokens = null, res = null) {
     });
     tokens = await refreshEtsyToken(tokens);
     if (res) setEtsyAuthCookie(res, tokens);
+    if (req?.session) await saveUserEtsyAuth(req.session, tokens);
   }
   else if (tokens.last_refresh_status !== "active") {
     tokens = { ...tokens, last_refresh_status: "active" };
     await writeEtsyTokens(tokens);
     if (res) setEtsyAuthCookie(res, tokens);
+    if (req?.session) await saveUserEtsyAuth(req.session, tokens);
     etsyDebug("Etsy token refresh debug", {
       hasAccessToken: Boolean(tokens.access_token),
       hasRefreshToken: Boolean(tokens.refresh_token),
@@ -1082,22 +1379,35 @@ async function ensureValidEtsyToken(tokens = null, res = null) {
   return tokens;
 }
 
-async function etsyApi(pathname, tokens) {
-  tokens = await ensureValidEtsyToken(tokens);
+async function etsyApi(pathname, tokens, context = {}) {
+  tokens = await ensureValidEtsyToken(tokens, context.res, context.req);
   let lastError = null;
   for (const baseUrl of [ETSY_API_BASE, ETSY_API_FALLBACK_BASE]) {
     try {
-      const response = await fetch(`${baseUrl}${pathname}`, {
-        headers: {
-          "Authorization": `Bearer ${tokens.access_token}`,
-          "x-api-key": ETSY_CLIENT_ID
-        }
+      let response = await fetch(`${baseUrl}${pathname}`, {
+        headers: etsyApiHeaders(tokens.access_token)
       });
+      if (response.status === 401 && tokens.refresh_token) {
+        tokens = await refreshEtsyToken(tokens);
+        if (context.res) setEtsyAuthCookie(context.res, tokens);
+        if (context.req?.session) await saveUserEtsyAuth(context.req.session, tokens);
+        response = await fetch(`${baseUrl}${pathname}`, {
+          headers: etsyApiHeaders(tokens.access_token)
+        });
+      }
       const payload = await response.json().catch(() => ({}));
       if (response.ok) return payload;
+      etsyDebug("Etsy API request failed", {
+        path: pathname,
+        baseUrl,
+        status: response.status,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: payload
+      });
       const error = new Error(payload.error || payload.message || `Etsy API failed with ${response.status}`);
       error.status = response.status;
       error.baseUrl = baseUrl;
+      error.payload = payload;
       lastError = error;
     } catch (error) {
       lastError = error;
@@ -1108,9 +1418,23 @@ async function etsyApi(pathname, tokens) {
 
 function extractEtsyResults(payload) {
   if (Array.isArray(payload?.results)) return payload.results;
+  if (Array.isArray(payload?.shops)) return payload.shops;
+  if (Array.isArray(payload?.data)) return payload.data;
   if (Array.isArray(payload)) return payload;
   if (payload && typeof payload === "object") return [payload];
   return [];
+}
+
+function extractEtsyUserId(payload = {}, tokens = {}) {
+  return String(
+    payload.user_id ||
+    payload.user?.user_id ||
+    payload.data?.user_id ||
+    payload.results?.[0]?.user_id ||
+    payload.results?.[0]?.user?.user_id ||
+    userIdFromToken(tokens) ||
+    ""
+  );
 }
 
 function userIdFromToken(tokens = {}) {
@@ -1124,6 +1448,14 @@ function urlFromShop(shop = {}) {
   return "";
 }
 
+function shopIdFromShop(shop = {}) {
+  return String(shop.shop_id || shop.id || shop.shop?.shop_id || "");
+}
+
+function shopNameFromShop(shop = {}) {
+  return String(shop.shop_name || shop.name || shop.title || shop.shop?.shop_name || "");
+}
+
 function selectActiveShop(shops = []) {
   return shops.find((shop) => {
     const state = String(shop.state || shop.status || "").toLowerCase();
@@ -1132,50 +1464,120 @@ function selectActiveShop(shops = []) {
   }) || shops[0] || null;
 }
 
-async function discoverEtsyShop(tokens) {
+async function fetchEtsyShopLookup(url, tokens, label) {
+  const response = await fetch(url, { headers: etsyApiHeaders(tokens.access_token) });
+  const body = await response.json().catch(() => ({}));
+  etsyDebug("Etsy shop lookup response", {
+    label,
+    url,
+    status: response.status,
+    headers: Object.fromEntries(response.headers.entries()),
+    body,
+    accessPrefix10: String(tokens.access_token || "").slice(0, 10)
+  });
+  if (!response.ok) {
+    const error = new Error(body.error || body.message || `${label} failed with ${response.status}`);
+    error.status = response.status;
+    error.payload = body;
+    throw error;
+  }
+  return body;
+}
+
+async function discoverEtsyShop(tokens, context = {}) {
   if (tokens.shop_id && tokens.shop_name) return tokens;
   let me = {};
   try {
-    me = await etsyApi("/users/me", tokens);
-    etsyDebug("User fetched", { user_id: me.user_id || me.user?.user_id || me.results?.[0]?.user_id || userIdFromToken(tokens) });
+    me = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/users/__SELF__`, tokens, "users_self");
+    etsyDebug("User fetched", { user_id: extractEtsyUserId(me, tokens) });
   } catch (error) {
-    etsyDebug("User fetch fallback", { error: error instanceof Error ? error.message : String(error) });
+    etsyDebug("User __SELF__ fetch failed", { error: error instanceof Error ? error.message : String(error) });
   }
-  const userId = String(me.user_id || me.user?.user_id || me.results?.[0]?.user_id || userIdFromToken(tokens) || "");
-  if (!userId) throw new Error("Could not read Etsy user id.");
+  const userId = extractEtsyUserId(me, tokens);
   let shops = [];
-  try {
-    const shopsPayload = await etsyApi(`/users/${userId}/shops`, tokens);
-    shops = extractEtsyResults(shopsPayload);
-  } catch (error) {
-    etsyDebug("User shops fetch failed", { user_id: userId, error: error instanceof Error ? error.message : String(error) });
+  if (userId) {
+    try {
+      const shopsPayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/users/${encodeURIComponent(userId)}/shops`, tokens, "user_shops");
+      console.log("[ETSY DEBUG] RAW SHOP RESPONSE", JSON.stringify(shopsPayload, null, 2));
+      shops = extractEtsyResults(shopsPayload);
+    } catch (error) {
+      etsyDebug("User shops fetch failed", { user_id: userId, error: error instanceof Error ? error.message : String(error) });
+    }
+  } else {
+    etsyDebug("Could not read Etsy user id before shop lookup", { accessPrefix10: String(tokens.access_token || "").slice(0, 10) });
   }
-  const shop = selectActiveShop(shops);
-  if (!shop?.shop_id) throw new Error("No Etsy shop found for this account.");
+  let shop = selectActiveShop(shops);
+  let foundShopCount = shops.length;
+  if (!shopIdFromShop(shop) && FALLBACK_SHOP_NAME) {
+    try {
+      const shopNamePayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/shops?shop_name=${encodeURIComponent(FALLBACK_SHOP_NAME.toLowerCase())}`, tokens, "shop_name_lookup");
+      console.log("[ETSY DEBUG] RAW SHOP RESPONSE", JSON.stringify(shopNamePayload, null, 2));
+      const shopNameShops = extractEtsyResults(shopNamePayload);
+      foundShopCount += shopNameShops.length;
+      shop = selectActiveShop(shopNameShops);
+    } catch (error) {
+      etsyDebug("Shop name lookup failed", { shop_name: FALLBACK_SHOP_NAME, error: error instanceof Error ? error.message : String(error) });
+    }
+  }
+  const resolvedShopId = shopIdFromShop(shop);
+  const resolvedShopName = shopNameFromShop(shop);
+  if (!resolvedShopId && foundShopCount > 0) {
+    const error = new Error("Etsy returned shops but no usable shop_id.");
+    error.code = "shop_id_missing";
+    error.status = 502;
+    throw error;
+  }
+  if (!resolvedShopId) {
+    etsyDebug("No seller shop found for Etsy user", {
+      user_id: userId,
+      shops_seen: foundShopCount,
+      scopes: tokens.scope || ETSY_SCOPES,
+      shop_name_lookup: FALLBACK_SHOP_NAME,
+      accessPrefix10: String(tokens.access_token || "").slice(0, 10)
+    });
+    const error = new Error("Your Etsy account has no shop. Please connect a seller account.");
+    error.code = "seller_account_required";
+    error.status = 403;
+    throw error;
+  }
   const updated = {
     ...tokens,
     user_id: userId,
-    shop_id: String(shop.shop_id),
-    shop_name: shop.shop_name || shop.title || "",
+    shop_id: resolvedShopId,
+    shop_name: resolvedShopName,
     shop_url: urlFromShop(shop),
     updated_at: new Date().toISOString()
   };
+  console.log("[ETSY DEBUG] RESOLVED SHOP", {
+    shop_id: updated.shop_id,
+    shop_name: updated.shop_name
+  });
   await writeEtsyTokens(updated);
+  if (context.req?.session) {
+    const updatedSession = await updateSession(context.req.session.id, {
+      etsy_shop_id: updated.shop_id,
+      etsy_shop_name: updated.shop_name,
+      etsy_shop_url: updated.shop_url
+    });
+    if (updatedSession) Object.assign(context.req.session, updatedSession);
+    await saveUserEtsyAuth(context.req.session, updated);
+  }
+  if (context.res) setEtsyAuthCookie(context.res, updated);
   etsyDebug("Shop resolved", {
     user_id: updated.user_id,
     shop_id: updated.shop_id,
     shop_name: updated.shop_name,
-    shops_seen: shops.length
+    shops_seen: foundShopCount
   });
   return updated;
 }
 
-async function syncEtsyListings(tokens = null, res = null) {
-  tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res));
+async function syncEtsyListings(tokens = null, res = null, req = null) {
+  tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
   globalThis.etsyAuthStore = publicEtsyAuth(tokens);
   if (res) setEtsyAuthCookie(res, tokens);
   console.log("Fetching live Etsy listings", { shop_id: tokens.shop_id || "", shop_name: tokens.shop_name || "" });
-  const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens);
+  const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens, { req, res });
   const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
     ...listing,
     sync_source: "etsy_api",
@@ -1256,18 +1658,8 @@ async function sendToMake(product) {
     await writeLogs(logs);
 
     if (response.ok) {
-      const normalizedParsed = ensureOptimizationContent(normalizeOptimization(parsed || responseText), product);
-      log.optimization_record = await createOptimizationRecord({
-        listing: product,
-        optimized: normalizedParsed,
-        request_log_id: log.id
-      });
-      log.optimized_title = normalizedParsed.seo_title || normalizedParsed.optimized_title || "";
-      log.optimized_description = normalizedParsed.description || normalizedParsed.optimized_description || "";
-      log.optimized_tags = normalizedParsed.tags || normalizedParsed.optimized_tags || [];
-      log.seo_title = normalizedParsed.seo_title;
-      log.optimized_description = normalizedParsed.optimized_description;
-      log.optimized_tags = normalizedParsed.optimized_tags;
+      const normalizedParsed = normalizeOptimization(parsed || responseText);
+      log.raw_optimization_valid = validateJewelryOptimization(normalizedParsed, product).valid;
     }
 
     return log;
@@ -1329,7 +1721,7 @@ app.get("/api/session", async (req, res) => {
 
 app.get("/api/etsy/status", async (req, res) => {
   try {
-    const tokens = readEtsyAuthCookie(req);
+    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -1338,14 +1730,23 @@ app.get("/api/etsy/status", async (req, res) => {
 
 app.get("/api/auth-status", async (req, res) => {
   try {
-    const tokens = readEtsyAuthCookie(req);
+    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
   }
 });
 
-app.get("/api/etsy/connect", async (req, res) => {
+app.get("/api/auth/status", async (req, res) => {
+  try {
+    const tokens = req.etsyAuth || readEtsyAuthCookie(req);
+    res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
+  } catch (error) {
+    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
+  }
+});
+
+async function startEtsyOAuth(req, res) {
   if (!etsyConfigured()) {
     res.status(503).send("Etsy API is not configured. Set ETSY_CLIENT_ID and ETSY_REDIRECT_URI.");
     return;
@@ -1357,6 +1758,9 @@ app.get("/api/etsy/connect", async (req, res) => {
     etsy_code_verifier: verifier,
     etsy_oauth_started_at: new Date().toISOString()
   });
+  setOauthCookie(res, "acopes_etsy_oauth_state", state);
+  setOauthCookie(res, "acopes_etsy_code_verifier", verifier);
+  etsyDebug("Starting Etsy OAuth request", { scopes: ETSY_SCOPES, redirect_uri: ETSY_REDIRECT_URI });
   const params = new URLSearchParams({
     response_type: "code",
     redirect_uri: ETSY_REDIRECT_URI,
@@ -1367,13 +1771,17 @@ app.get("/api/etsy/connect", async (req, res) => {
     code_challenge_method: "S256"
   });
   res.redirect(`${ETSY_AUTH_URL}?${params.toString()}`);
-});
+}
 
-app.get("/api/etsy/callback", async (req, res) => {
+async function finishEtsyOAuth(req, res) {
   try {
     if (!etsyConfigured()) throw new Error("Etsy API is not configured.");
     if (!req.query.code) throw new Error("Missing Etsy authorization code.");
-    if (!req.query.state || req.query.state !== req.session.etsy_oauth_state) throw new Error("Invalid Etsy OAuth state.");
+    const cookies = parseCookies(req.headers.cookie || "");
+    const expectedState = cookies.acopes_etsy_oauth_state || req.session.etsy_oauth_state || "";
+    if (!req.query.state || req.query.state !== expectedState) throw new Error("Invalid Etsy OAuth state.");
+    const codeVerifier = cookies.acopes_etsy_code_verifier || req.session.etsy_code_verifier || "";
+    clearOauthCookies(res);
     const response = await fetch(ETSY_TOKEN_URL, {
       method: "POST",
       headers: { "Content-Type": "application/x-www-form-urlencoded" },
@@ -1382,7 +1790,7 @@ app.get("/api/etsy/callback", async (req, res) => {
         client_id: ETSY_CLIENT_ID,
         redirect_uri: ETSY_REDIRECT_URI,
         code: String(req.query.code),
-        code_verifier: req.session.etsy_code_verifier || ""
+        code_verifier: codeVerifier
       })
     });
     const payload = await response.json().catch(() => ({}));
@@ -1409,11 +1817,11 @@ app.get("/api/etsy/callback", async (req, res) => {
     });
     let resolvedTokens = tokens;
     try {
-      resolvedTokens = await discoverEtsyShop(tokens);
+      resolvedTokens = await discoverEtsyShop(tokens, { req, res });
     } catch (error) {
       etsyDebug("Shop status resolution skipped", { error: error instanceof Error ? error.message : String(error) });
     }
-    await persistEtsyAuth(res, resolvedTokens);
+    await persistRequestEtsyAuth(req, res, resolvedTokens);
     etsyDebug("Etsy auth saved after callback", {
       hasAccessToken: Boolean(resolvedTokens.access_token),
       hasRefreshToken: Boolean(resolvedTokens.refresh_token),
@@ -1421,61 +1829,69 @@ app.get("/api/etsy/callback", async (req, res) => {
       shop_name: resolvedTokens.shop_name || ""
     });
     try {
-      await syncEtsyListings(resolvedTokens, res);
+      await syncEtsyListings(resolvedTokens, res, req);
     } catch (error) {
       etsyDebug("Initial Etsy listing sync skipped", { error: error instanceof Error ? error.message : String(error) });
     }
     res.redirect("/app.html?etsy=connected");
   } catch (error) {
+    clearOauthCookies(res);
     res.redirect(`/app.html?etsy=error&message=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`);
   }
-});
+}
 
-app.post("/api/etsy/disconnect", async (_req, res) => {
+app.get("/auth/etsy", startEtsyOAuth);
+app.get("/api/etsy/auth", startEtsyOAuth);
+app.get("/api/etsy/connect", startEtsyOAuth);
+app.get("/auth/etsy/callback", finishEtsyOAuth);
+app.get("/api/etsy/callback", finishEtsyOAuth);
+
+app.post("/api/etsy/disconnect", async (req, res) => {
   await writeEtsyTokens({});
   globalThis.etsyAuthStore = null;
   clearEtsyAuthCookie(res);
+  if (req.user?.id) await updateUser(req.user.id, { etsy_auth: null });
   res.json(successResponse(await etsyTokenStatus(), "Etsy disconnected"));
 });
 
 app.post("/api/etsy/sync", async (req, res) => {
   try {
     if (!etsyConfigured()) {
-      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(readEtsyAuthCookie(req))));
+      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))));
       return;
     }
-    const cookieTokens = readEtsyAuthCookie(req);
-    if (!cookieTokens.access_token) {
-      res.status(401).json(errorResponse("etsy_auth_required", "Etsy is not connected.", { listings: [], etsy: await etsyTokenStatus(cookieTokens) }));
+    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    if (!userTokens.access_token) {
+      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
     }
-    const listings = await syncEtsyListings(cookieTokens, res);
+    const listings = await syncEtsyListings(userTokens, res, req);
     res.json(successResponse({
       status: "completed",
       source: "etsy_api",
       listings,
-      etsy: await etsyTokenStatus(globalThis.etsyAuthStore || cookieTokens)
+      etsy: await etsyTokenStatus(req.etsyAuth || globalThis.etsyAuthStore || userTokens)
     }, "Etsy listings synced"));
   } catch (error) {
     const isRefreshFailure = error?.code === "token_refresh_failed" || error?.code === "missing_refresh_token";
-    const status = isRefreshFailure || error?.status === 401 ? 401 : 502;
-    const errorCode = error?.code === "missing_refresh_token" ? "missing_refresh_token" : isRefreshFailure ? "token_refresh_failed" : status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed";
+    const status = error?.code === "seller_account_required" ? 403 : isRefreshFailure || error?.status === 401 ? 401 : 502;
+    const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : error?.code === "missing_refresh_token" ? "missing_refresh_token" : isRefreshFailure ? "token_refresh_failed" : status === 401 ? "etsy_reconnect_required" : "etsy_sync_failed";
     res.status(status).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
     ));
   }
 });
 
 app.post("/api/etsy/refresh-sync", async (req, res) => {
   try {
-    const cookieTokens = readEtsyAuthCookie(req);
-    if (!cookieTokens.access_token) {
-      res.status(401).json(errorResponse("etsy_auth_required", "Etsy is not connected.", { listings: [], etsy: await etsyTokenStatus(cookieTokens) }));
+    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    if (!userTokens.access_token) {
+      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
     }
-    const token = await ensureValidEtsyToken(cookieTokens, res);
+    const token = await ensureValidEtsyToken(userTokens, res, req);
     etsyDebug("Etsy token refresh debug", {
       hasAccessToken: Boolean(token.access_token),
       hasRefreshToken: Boolean(token.refresh_token),
@@ -1485,7 +1901,7 @@ app.post("/api/etsy/refresh-sync", async (req, res) => {
       refreshSuccess: token.last_refresh_status === "refreshed",
       etsyStatusCode: null
     });
-    const listings = await syncEtsyListings(token, res);
+    const listings = await syncEtsyListings(token, res, req);
     res.json(successResponse({
       status: "completed",
       source: "etsy_refresh_sync",
@@ -1493,11 +1909,11 @@ app.post("/api/etsy/refresh-sync", async (req, res) => {
       etsy: await etsyTokenStatus(globalThis.etsyAuthStore || token)
     }, "Etsy refresh sync completed"));
   } catch (error) {
-    const errorCode = error?.code === "missing_refresh_token" ? "missing_refresh_token" : error?.code === "token_refresh_failed" ? "token_refresh_failed" : "etsy_sync_failed";
-    res.status(errorCode === "etsy_sync_failed" ? 502 : 401).json(errorResponse(
+    const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : error?.code === "missing_refresh_token" ? "missing_refresh_token" : error?.code === "token_refresh_failed" ? "token_refresh_failed" : "etsy_sync_failed";
+    res.status(errorCode === "seller_account_required" ? 403 : errorCode === "etsy_sync_failed" ? 502 : 401).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || readEtsyAuthCookie(req))), reconnect_required: true, token_status: "reconnect_required" } }
     ));
   }
 });
@@ -1551,28 +1967,50 @@ app.get("/api/queue", async (_req, res) => {
 
 app.get("/api/listings", async (req, res) => {
   try {
-    const cookieTokens = readEtsyAuthCookie(req);
-    if (!cookieTokens.access_token) {
-      res.status(401).json(errorResponse("etsy_auth_required", "Etsy is not connected.", {
+    const userTokens = req.etsyAuth || readEtsyAuthCookie(req);
+    etsyDebug("Listings auth snapshot", {
+      hasAccessToken: Boolean(userTokens.access_token),
+      hasRefreshToken: Boolean(userTokens.refresh_token),
+      user_id: userTokens.user_id || "",
+      shop_id: userTokens.shop_id || "",
+      scopes: userTokens.scope || ETSY_SCOPES
+    });
+    if (!userTokens.access_token) {
+      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", {
         status: "failed",
         listings: [],
-        etsy: await etsyTokenStatus(cookieTokens)
+        etsy: await etsyTokenStatus(userTokens)
       }));
       return;
     }
-    const tokens = await discoverEtsyShop(await ensureValidEtsyToken(cookieTokens, res));
+    const validTokens = await ensureValidEtsyToken(userTokens, res, req);
+    const sessionShopId = req.session?.etsy_shop_id || "";
+    const sessionShopName = req.session?.etsy_shop_name || "";
+    const tokens = sessionShopId
+      ? {
+          ...validTokens,
+          shop_id: String(sessionShopId),
+          shop_name: sessionShopName || validTokens.shop_name || FALLBACK_SHOP_NAME,
+          shop_url: req.session?.etsy_shop_url || validTokens.shop_url || ""
+        }
+      : await discoverEtsyShop(validTokens, { req, res });
     globalThis.etsyAuthStore = publicEtsyAuth(tokens);
     setEtsyAuthCookie(res, tokens);
     const response = await fetch(`https://openapi.etsy.com/v3/application/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?limit=100&includes=Images`, {
-      headers: {
-        "Authorization": `Bearer ${tokens.access_token}`,
-        "x-api-key": ETSY_CLIENT_ID
-      }
+      headers: etsyApiHeaders(tokens.access_token)
     });
     const payload = await response.json().catch(() => ({}));
     if (!response.ok) {
+      etsyDebug("Etsy listings API failed", {
+        status: response.status,
+        headers: Object.fromEntries(response.headers.entries()),
+        body: payload,
+        shop_id: tokens.shop_id || "",
+        user_id: tokens.user_id || ""
+      });
       const error = new Error(payload.error || payload.message || `Etsy API failed with ${response.status}`);
       error.status = response.status;
+      error.payload = payload;
       throw error;
     }
     const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
@@ -1594,8 +2032,9 @@ app.get("/api/listings", async (req, res) => {
       listings
     }, "Etsy listings synced"));
   } catch (error) {
-    const status = error?.status === 401 ? 401 : 502;
-    res.status(status).json(errorResponse(status === 401 ? "etsy_auth_required" : "listings_failed", error instanceof Error ? error.message : String(error), {
+    const status = error?.status === 401 ? 401 : error?.status === 403 ? 403 : 502;
+    const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : status === 401 ? "etsy_auth_required" : "listings_failed";
+    res.status(status).json(errorResponse(errorCode, error instanceof Error ? error.message : String(error), {
       status: "failed",
       error: error instanceof Error ? error.message : String(error)
     }));
@@ -1604,8 +2043,8 @@ app.get("/api/listings", async (req, res) => {
 
 app.post("/api/optimize", async (req, res) => {
   await incrementAnalytics("optimization_started");
-  const product = req.body.product || req.body.listing || {};
-  const log = await sendToMake(product);
+  const product = req.body.product || req.body.listing || req.body || {};
+  const log = await sendToMakeWithTaxonomyRetry(product);
   const user = await getSessionUser(req.session);
   const responseBody = successResponse(
     buildOptimizationResponsePayload(product, log, sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) })),
@@ -1624,7 +2063,7 @@ app.post("/api/send", async (req, res) => {
   }
   const creditBlocked = !devMode && user.credits_remaining < 1;
   await incrementAnalytics("optimization_started");
-  const log = await sendToMake(req.body.product);
+  const log = await sendToMakeWithTaxonomyRetry(req.body.product);
   const updatedUser = !devMode && !creditBlocked && log.status === "completed" ? await consumeCredits(user, 1) : user;
   const responseBody = successResponse(
     buildOptimizationResponsePayload(req.body.product, { ...log, credit_blocked: creditBlocked }, sessionSummary(req.session, updatedUser, { dev_mode: devMode })),
@@ -1657,7 +2096,7 @@ app.post("/api/send-batch", async (req, res) => {
   const results = [];
   for (const product of products) {
     await incrementAnalytics("optimization_started");
-    results.push(await sendToMake(product));
+    results.push(await sendToMakeWithTaxonomyRetry(product));
   }
   const completedCount = results.filter((item) => item.status === "completed").length;
   const updatedUser = !devMode && completedCount > 0 ? await consumeCredits(user, completedCount) : user;

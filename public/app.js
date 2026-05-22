@@ -4,8 +4,11 @@ let queueRecords = [];
 let logRecords = [];
 let currentSession = null;
 let dashboardInitialized = false;
+let etsyConnectionRequired = false;
+let etsySellerAccountRequired = false;
 const selectedListingIds = new Set();
 const listingOptimizationDebug = new Map();
+const pendingOptimizationByListing = new Map();
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 
@@ -44,6 +47,7 @@ const actionCenterEl = document.querySelector("#actionCenter");
 const activityFeedEl = document.querySelector("#activityFeed");
 const workspaceSelectorEl = document.querySelector("#workspaceSelector");
 const etsyAuthStatusEl = document.querySelector("#etsyAuthStatus");
+const etsyConnectBannerEl = document.querySelector("#etsyConnectBanner");
 const connectEtsyBtn = document.querySelector("#connectEtsy");
 const syncEtsyListingsBtn = document.querySelector("#syncEtsyListings");
 const disconnectEtsyBtn = document.querySelector("#disconnectEtsy");
@@ -546,11 +550,32 @@ function renderEtsyAuthStatus(status = {}) {
   if (connectEtsyBtn) connectEtsyBtn.hidden = connected && !expired;
   if (disconnectEtsyBtn) disconnectEtsyBtn.textContent = connected ? "Reconnect Etsy" : "Clear Etsy";
   if (syncEtsyListingsBtn) syncEtsyListingsBtn.disabled = !configured || !connected;
+  renderEtsyConnectBanner(status);
+}
+
+function renderEtsyConnectBanner(status = {}) {
+  if (!etsyConnectBannerEl) return;
+  const needsConnect = !status.connected || status.expired || status.reconnect_required || etsyConnectionRequired || etsySellerAccountRequired;
+  if (!needsConnect) {
+    etsyConnectBannerEl.hidden = true;
+    etsyConnectBannerEl.innerHTML = "";
+    return;
+  }
+  const sellerRequired = etsySellerAccountRequired || status.error === "seller_account_required";
+  etsyConnectBannerEl.hidden = false;
+  etsyConnectBannerEl.innerHTML = `
+    <div>
+      <p class="eyebrow">${sellerRequired ? "Seller account required" : "Etsy connection required"}</p>
+      <h2>${sellerRequired ? "Connect an Etsy seller account" : "Connect your Etsy Shop"}</h2>
+      <p>${sellerRequired ? "Your Etsy account has no shop. Please connect the seller account that owns your shop." : "Connect Etsy to load live listings and start draft-safe optimization."}</p>
+    </div>
+    <button data-connect-etsy>${sellerRequired ? "Reconnect Etsy seller account" : "Connect your Etsy Shop"}</button>
+  `;
 }
 
 async function refreshEtsyStatus() {
   try {
-    const response = await fetch("/api/etsy/status");
+    const response = await fetch("/api/auth/status");
     const result = await parseJsonResponse(response);
     const status = unwrapResponse(result, result);
     renderEtsyAuthStatus(status);
@@ -580,13 +605,19 @@ async function syncEtsyListings() {
     debugLog("etsy sync api response received", result);
     if (!response.ok || result?.success === false) {
       const message = result.message || result.error || "Etsy sync failed.";
-      showToast(message, "error");
       setStatus("Failed");
+      products = [];
+      etsyConnectionRequired = response.status === 401 || result?.error === "etsy_not_connected";
+      etsySellerAccountRequired = response.status === 403 || result?.error === "seller_account_required";
+      renderProducts();
+      renderCommerceIntelligence();
+      showToast(etsySellerAccountRequired ? "Your Etsy account has no shop. Please connect a seller account." : etsyConnectionRequired ? "Connect your Etsy shop to refresh live listings." : message, "error");
       await refreshEtsyStatus();
-      await refreshListings();
       return;
     }
     const payload = unwrapResponse(result, result);
+    etsyConnectionRequired = false;
+    etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
     pruneSelectedListings();
     renderProducts();
@@ -598,6 +629,8 @@ async function syncEtsyListings() {
     console.log("Refresh Sync failed", error);
     debugLog("etsy sync failed", error);
     setStatus("Failed");
+    etsyConnectionRequired = false;
+    etsySellerAccountRequired = false;
     showToast("API unavailable. Etsy sync failed.", "error");
     await refreshListings();
   } finally {
@@ -712,6 +745,7 @@ function rebuildSelectedListingIdsFromDom() {
 }
 
 function optimizedTitleFrom(after = {}, product = {}) {
+  if (after?.optimization_pending_validation || after?.final_output_valid === false || after?.validation_result === "invalid") return "";
   const title =
     after?.seo_title ||
     after?.optimized_title ||
@@ -722,22 +756,45 @@ function optimizedTitleFrom(after = {}, product = {}) {
     "";
   if (title && title !== "AI optimized title") return title;
   if (after?.pinterest_title && after.pinterest_title !== "AI optimized title") return after.pinterest_title;
+  if (product.optimization_pending_validation) return "";
   return product.optimizedTitle || product.optimized_title || "";
 }
 
 function optimizedDescriptionFrom(after = {}) {
+  if (after?.optimization_pending_validation || after?.final_output_valid === false || after?.validation_result === "invalid") return "";
   return after?.description || after?.optimized_description || after?.ai_description || "";
 }
 
 function optimizedTagsFrom(after = {}) {
+  if (after?.optimization_pending_validation || after?.final_output_valid === false || after?.validation_result === "invalid") return [];
   return Array.isArray(after?.tags) && after.tags.length ? after.tags : Array.isArray(after?.optimized_tags) ? after.optimized_tags : [];
+}
+
+function detectJewelryProductType(listing = {}) {
+  const text = `${listing.type || ""} ${listing.title || ""} ${listing.name || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
+  if (/\bnecklace\b|\bchain necklace\b|\bpendant necklace\b/.test(text)) return "necklace";
+  if (/\bchoker\b/.test(text)) return "choker";
+  if (/\bearrings?\b/.test(text)) return "earrings";
+  if (/\bbracelet\b/.test(text)) return "bracelet";
+  if (/\banklet\b/.test(text)) return "anklet";
+  if (/\bpendant\b/.test(text)) return "pendant";
+  if (/\bring\b/.test(text)) return "ring";
+  return "";
+}
+
+function recordOutputValid(record = {}) {
+  if (record.final_output_valid === false) return false;
+  if (record.validation_result === "invalid" || record.after?.validation_result === "invalid") return false;
+  if (record.validation_result?.valid === false || record.after?.taxonomy_validation?.valid === false) return false;
+  const beforeType = detectJewelryProductType(record.before || {});
+  const afterType = detectJewelryProductType(record.after || {});
+  return !beforeType || !afterType || beforeType === afterType || (beforeType === "necklace" && afterType === "pendant");
 }
 
 function normalizeOptimizationResponse(payload = {}, listing = {}) {
   const source =
     payload?.optimization_record?.after ||
     payload?.optimization?.after ||
-    payload?.make_response?.parsed ||
     payload?.optimization ||
     payload?.aiOptimization ||
     payload?.ai_optimization ||
@@ -768,22 +825,93 @@ function normalizeOptimizationResponse(payload = {}, listing = {}) {
         ? payload.optimized_tags
         : [];
   return {
-    seo_title: title || listing.optimizedTitle || listing.optimized_title || generateTitleCandidate(listing),
-    optimized_title: title || listing.optimizedTitle || listing.optimized_title || generateTitleCandidate(listing),
+    seo_title: title || generateTitleCandidate(listing),
+    optimized_title: title || generateTitleCandidate(listing),
     description,
     optimized_description: description,
     tags,
     optimized_tags: tags,
     thumbnail_preview_url: source.thumbnail_preview_url || source.hero_thumbnail_url || "",
+    final_output_source: payload.final_output_source || source.final_output_source || payload.optimization_record?.final_output_source || "",
+    validation_result: payload.validation_result || source.taxonomy_validation || payload.optimization_record?.validation_result || null,
+    final_output_valid: payload.final_output_valid ?? payload.optimization_record?.final_output_valid ?? source.final_output_valid ?? !(
+      payload.validation_result === "invalid" ||
+      source.validation_result === "invalid" ||
+      payload.validation_result?.valid === false ||
+      source.taxonomy_validation?.valid === false
+    ),
     response_keys: Object.keys(source || {}),
     raw: source
   };
 }
 
+function optimizationBadge(source = "") {
+  if (source === "ai_retry_valid") return "Retry Corrected";
+  if (source === "safe_fallback") return "Safe SEO Fallback";
+  return "AI Optimized";
+}
+
+function clearOptimizationState(listing = {}, message = "Validating optimization...") {
+  const listingId = String(listing.listing_id || "");
+  if (!listingId) return;
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== listingId) return;
+    item.optimizedTitle = "";
+    item.optimized_title = "";
+    item.optimizedDescription = "";
+    item.optimized_description = "";
+    item.optimizedTags = [];
+    item.optimized_tags = [];
+    item.optimization_pending_validation = true;
+    item.optimization_pending_message = message;
+  });
+  listing.optimizedTitle = "";
+  listing.optimized_title = "";
+  listing.optimizedDescription = "";
+  listing.optimized_description = "";
+  listing.optimizedTags = [];
+  listing.optimized_tags = [];
+  listing.optimization_pending_validation = true;
+  listing.optimization_pending_message = message;
+  pendingOptimizationByListing.set(listingId, message);
+  listingOptimizationDebug.delete(listingId);
+  optimizationRecords = optimizationRecords.filter((record) => String(record.listing_id) !== listingId);
+  seenOptimizationIds.clear();
+  renderProducts();
+  renderOptimizations(optimizationRecords);
+  renderHistorySidebar(optimizationRecords);
+  renderScoreDashboard(optimizationRecords);
+}
+
+function setOptimizationPending(listing = {}, message = "Validating optimization...") {
+  const listingId = String(listing.listing_id || "");
+  if (!listingId) return;
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== listingId) return;
+    item.optimization_pending_validation = true;
+    item.optimization_pending_message = message;
+  });
+  pendingOptimizationByListing.set(listingId, message);
+  renderProducts();
+}
+
+function clearOptimizationPending(listing = {}) {
+  const listingId = String(listing.listing_id || "");
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== listingId) return;
+    item.optimization_pending_validation = false;
+    item.optimization_pending_message = "";
+  });
+  listing.optimization_pending_validation = false;
+  listing.optimization_pending_message = "";
+  if (listingId) pendingOptimizationByListing.delete(listingId);
+}
+
 function generateTitleCandidate(listing = {}) {
   const text = `${listing.title || listing.name || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
   const material = text.includes("pearl") ? "Pearl" : text.includes("silver") ? "Silver" : "Gold";
-  const type = text.includes("bracelet") ? "Bracelet" : text.includes("earring") ? "Earrings" : text.includes("ring") ? "Ring" : "Necklace";
+  const detectedType = detectJewelryProductType(listing) || "necklace";
+  const type = detectedType === "earrings" ? "Earrings" : detectedType.charAt(0).toUpperCase() + detectedType.slice(1);
   const chain = text.includes("paperclip")
     ? "Paperclip Chain"
     : text.includes("herringbone")
@@ -795,7 +923,7 @@ function generateTitleCandidate(listing = {}) {
           : text.includes("pearl")
             ? "Pearl"
             : "Minimal";
-  return `${material} ${chain} ${type}, Minimal Everyday Jewelry`;
+  return `${material} ${chain} ${type}, Minimal Layering Jewelry`;
 }
 
 function applyOptimizationResponse(listing = {}, payload = {}) {
@@ -805,7 +933,19 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
   console.log("Applying optimization to:", listingId);
   if (!listingId) return;
   const normalized = normalizeOptimizationResponse(payload, listing);
+  console.log({
+    validation_result: normalized.validation_result,
+    retry_triggered: normalized.final_output_source === "ai_retry_valid" || normalized.final_output_source === "safe_fallback",
+    final_output_source: normalized.final_output_source,
+    final_output_valid: normalized.final_output_valid
+  });
+  if (normalized.final_output_valid === false) {
+    clearOptimizationState(listing, "Retrying optimization...");
+    showToast("Invalid AI output rejected. Waiting for valid retry or fallback.", "error");
+    return;
+  }
   const title = optimizedTitleFrom(normalized, listing);
+  clearOptimizationPending(listing);
   listingOptimizationDebug.set(listingId, {
     optimized_title: title,
     response_keys: normalized.response_keys,
@@ -835,6 +975,9 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
       confidence_score: payload.confidence ?? payload.confidence_score ?? 88
     },
     confidence_label: "Good confidence",
+    final_output_source: normalized.final_output_source || payload.final_output_source || "ai_valid",
+    validation_result: normalized.validation_result,
+    final_output_valid: normalized.final_output_valid,
     status: "completed",
     ai_change_reasons: [
       "Shortened title for mobile readability",
@@ -843,6 +986,22 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
       "Aligned with Etsy 2026 title guidance"
     ]
   };
+  if (!recordOutputValid(record)) {
+    clearOptimizationState(listing, "Generating safe fallback...");
+    showToast("Invalid category-mismatched optimization rejected.", "error");
+    return;
+  }
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== listingId) return;
+    item.optimizedTitle = title;
+    item.optimized_title = title;
+    item.optimizedDescription = normalized.optimized_description || normalized.description || "";
+    item.optimized_description = item.optimizedDescription;
+    item.optimizedTags = normalized.optimized_tags || normalized.tags || [];
+    item.optimized_tags = item.optimizedTags;
+    item.optimization_pending_validation = false;
+    item.optimization_pending_message = "";
+  });
   if (existingIndex >= 0) optimizationRecords.splice(existingIndex, 1, record);
   else optimizationRecords.unshift(record);
   renderProducts();
@@ -881,21 +1040,44 @@ function requireSelectedProducts() {
 }
 
 function renderProducts() {
+  if (etsySellerAccountRequired) {
+    productsEl.innerHTML = `
+      <div class="empty etsy-connect-empty">
+        <strong>Seller account required</strong>
+        <p>Your Etsy account has no shop. Please connect a seller account.</p>
+        <button data-connect-etsy>Reconnect Etsy seller account</button>
+      </div>
+    `;
+    return;
+  }
+  if (etsyConnectionRequired) {
+    productsEl.innerHTML = `
+      <div class="empty etsy-connect-empty">
+        <strong>Connect your Etsy Shop</strong>
+        <p>ACOPES AI needs your Etsy seller connection before it can load live listings.</p>
+        <button data-connect-etsy>Connect your Etsy Shop</button>
+      </div>
+    `;
+    return;
+  }
   if (!products.length) {
     productsEl.innerHTML = `<div class="empty">No active Etsy listings loaded yet.</div>`;
     return;
   }
 
-  const latestByListing = new Map(optimizationRecords.map((record) => [record.listing_id, record]));
+  const latestByListing = new Map(optimizationRecords.filter(recordOutputValid).map((record) => [String(record.listing_id), record]));
   productsEl.innerHTML = products
     .map((product, index) => {
       const selectionId = productSelectionId(product, index);
-      const optimization = latestByListing.get(product.listing_id);
+      const optimization = latestByListing.get(String(product.listing_id));
       const debugInfo = listingOptimizationDebug.get(String(product.listing_id));
-      const displayAfter = optimization?.after || null;
+      const pendingMessage = pendingOptimizationByListing.get(String(product.listing_id)) || product.optimization_pending_message || "";
+      const isPendingValidation = Boolean(product.optimization_pending_validation || pendingMessage);
+      const displayAfter = isPendingValidation ? null : optimization?.after || null;
       const optimizedTitle = optimizedTitleFrom(displayAfter, product);
       const optimizedDescription = optimizedDescriptionFrom(displayAfter);
       const optimizedTags = optimizedTagsFrom(displayAfter);
+      const outputSource = optimization?.final_output_source || displayAfter?.final_output_source || "";
       const previewImage = displayAfter?.thumbnail_preview_url || product.image_url;
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
       const previewAttr = previewImage ? `data-preview="${escapeAttribute(previewImage)}"` : "";
@@ -912,7 +1094,7 @@ function renderProducts() {
             </div>
             <div class="mini-compare">
               <div><span>Before title</span><p>${escapeHtml(product.title)}</p></div>
-              <div><span>Optimized title</span><p>${escapeHtml(optimizedTitle || "Waiting for optimization")}</p></div>
+              <div><span>Optimized title</span><p>${escapeHtml(isPendingValidation ? pendingMessage : optimizedTitle || "Waiting for optimization")}</p>${displayAfter ? `<b class="source-badge">${escapeHtml(optimizationBadge(outputSource))}</b>` : ""}</div>
             </div>
             ${displayAfter ? `
               <div class="optimized-preview">
@@ -983,6 +1165,7 @@ function renderLogs(logs) {
 }
 
 function renderOptimizations(records) {
+  records = records.filter(recordOutputValid);
   if (!records.length) {
     optimizationsEl.innerHTML = `<div class="empty">No AI optimizations received yet.</div>`;
     return;
@@ -994,6 +1177,7 @@ function renderOptimizations(records) {
         const optimizedTitle = optimizedTitleFrom(record.after, {});
         const optimizedTags = optimizedTagsFrom(record.after);
         const recordStatus = record.status || "";
+        const outputSource = record.final_output_source || record.after?.final_output_source || "";
         const beforeImageAttr = record.before.image_url ? `data-preview="${escapeAttribute(record.before.image_url)}"` : "";
         const afterImageAttr = record.after.thumbnail_preview_url ? `data-preview="${escapeAttribute(record.after.thumbnail_preview_url)}"` : "";
         return `
@@ -1001,6 +1185,7 @@ function renderOptimizations(records) {
           <header>
             <strong>${escapeHtml(record.listing_name)}</strong>
             <span class="draft-status ${safeStatusClass(recordStatus)}">${escapeHtml(recordStatus.replaceAll("_", " "))}</span>
+            <span class="source-badge">${escapeHtml(optimizationBadge(outputSource))}</span>
           </header>
           <div class="optimization-body">
             <div class="optimization-main">
@@ -1220,7 +1405,7 @@ async function refreshLogs() {
 async function refreshOptimizations() {
   const response = await fetch("/api/optimizations");
   const result = await response.json();
-  optimizationRecords = unwrapResponse(result, []);
+  optimizationRecords = unwrapResponse(result, []).filter(recordOutputValid);
   renderOptimizations(optimizationRecords);
   renderScoreDashboard(optimizationRecords);
   renderHistorySidebar(optimizationRecords);
@@ -1252,12 +1437,26 @@ async function refreshListings() {
     if (!response.ok || result?.success === false) {
       setStatus("Failed");
       products = [];
+      etsyConnectionRequired = response.status === 401 || result?.error === "etsy_not_connected";
+      etsySellerAccountRequired = response.status === 403 || result?.error === "seller_account_required";
       renderProducts();
       renderCommerceIntelligence();
+      if (etsySellerAccountRequired) {
+        await refreshEtsyStatus();
+        showToast("Your Etsy account has no shop. Please connect a seller account.", "error");
+        return;
+      }
+      if (etsyConnectionRequired) {
+        await refreshEtsyStatus();
+        showToast("Connect your Etsy shop to load live listings.", "error");
+        return;
+      }
       showToast(result.message || "API unavailable. Etsy listings were not loaded.", "error");
       return;
     }
     const payload = unwrapResponse(result, result);
+    etsyConnectionRequired = false;
+    etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
     if (payload.etsy) renderEtsyAuthStatus(payload.etsy);
     products.sort((a, b) => {
@@ -1275,6 +1474,8 @@ async function refreshListings() {
     debugLog("listing fetch failed", error);
     setStatus("Failed");
     products = [];
+    etsyConnectionRequired = false;
+    etsySellerAccountRequired = false;
     renderProducts();
     renderCommerceIntelligence();
     showToast("API unavailable. Etsy listings were not loaded.", "error");
@@ -1289,8 +1490,10 @@ async function sendSingle(product) {
   }
   setStatus("Sending");
   sendSelectedBtn.disabled = true;
+  clearOptimizationState(product, "Validating optimization...");
   try {
     console.log("CALLING OPTIMIZATION ENDPOINT", product);
+    setOptimizationPending(product, "Retrying optimization...");
     const response = await fetch("/api/optimize", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -1312,9 +1515,19 @@ async function sendSingle(product) {
       return;
     }
     if (result.session) renderSession(result.session);
-    product.optimizedTitle = data.optimized_title || data.optimizedTitle || result.optimized_title || result.optimizedTitle || "";
-    product.optimized_title = product.optimizedTitle;
-    renderProducts();
+    const finalValid = data.final_output_valid ?? result.final_output_valid ?? true;
+    console.log({
+      validation_result: data.validation_result || result.validation_result,
+      retry_triggered: ["ai_retry_valid", "safe_fallback"].includes(data.final_output_source || result.final_output_source),
+      final_output_source: data.final_output_source || result.final_output_source,
+      final_output_valid: finalValid
+    });
+    if (finalValid === false) {
+      clearOptimizationState(product, "Generating safe fallback...");
+      showToast("Invalid AI output rejected. Waiting for valid retry or fallback.", "error");
+      return;
+    }
+    clearOptimizationPending(product);
     applyOptimizationResponse(product, result);
     showToast("Optimization queued. ACOPES AI is processing this listing.", "success");
     await refreshLogs();
@@ -1322,6 +1535,7 @@ async function sendSingle(product) {
   } catch (error) {
     debugLog("send api failed", error);
     setStatus("Failed");
+    clearOptimizationPending(product);
     showToast("API unavailable. Optimization could not be queued.", "error");
   } finally {
     sendSelectedBtn.disabled = false;
@@ -1400,6 +1614,18 @@ sendBatchBtn?.addEventListener("click", async () => {
 
 refreshListingsBtn?.addEventListener("click", refreshListings);
 
+productsEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-connect-etsy]");
+  if (!button) return;
+  window.location.href = "/api/etsy/auth";
+});
+
+etsyConnectBannerEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-connect-etsy]");
+  if (!button) return;
+  window.location.href = "/api/etsy/auth";
+});
+
 queueBatchBtn?.addEventListener("click", async () => {
   const batch = requireSelectedProducts();
   if (!batch.length) return;
@@ -1423,7 +1649,7 @@ workspaceSelectorEl?.addEventListener("change", () => {
 });
 
 connectEtsyBtn?.addEventListener("click", () => {
-  window.location.href = "/api/etsy/connect";
+  window.location.href = "/api/etsy/auth";
 });
 
 syncEtsyListingsBtn?.addEventListener("click", syncEtsyListings);
@@ -1612,8 +1838,10 @@ queueEl?.addEventListener("click", async (event) => {
 
 refreshSession().then(async (session) => {
   const requestedUpgrade = new URLSearchParams(window.location.search).get("upgrade");
+  const etsyState = new URLSearchParams(window.location.search).get("etsy");
   if (requestedUpgrade) showUpgradeModal(requestedUpgrade);
   const etsyMessage = new URLSearchParams(window.location.search).get("message");
+  if (etsyState === "connected") showToast("Etsy shop connected. Loading live listings...", "success");
   if (etsyMessage) showToast(decodeURIComponent(etsyMessage), "error");
   await refreshEtsyStatus();
   renderCommerceIntelligence();
