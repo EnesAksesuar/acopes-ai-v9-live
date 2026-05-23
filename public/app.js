@@ -11,6 +11,33 @@ const listingOptimizationDebug = new Map();
 const pendingOptimizationByListing = new Map();
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
+const nativeFetch = window.fetch.bind(window);
+
+function storedAuthToken() {
+  try {
+    return localStorage.getItem("acopes_auth") || "";
+  } catch {
+    return "";
+  }
+}
+
+function persistAuthToken(token = "") {
+  if (!token) return;
+  try {
+    localStorage.setItem("acopes_auth", token);
+  } catch {
+    // Storage can be unavailable in private or locked-down browser contexts.
+  }
+}
+
+window.fetch = (input, init = {}) => {
+  const url = typeof input === "string" ? input : input?.url || "";
+  if (!String(url).startsWith("/api/")) return nativeFetch(input, init);
+  const headers = new Headers(init.headers || {});
+  const token = storedAuthToken();
+  if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
+  return nativeFetch(input, { ...init, headers });
+};
 
 const productsEl = document.querySelector("#products");
 const logsEl = document.querySelector("#logs");
@@ -734,6 +761,8 @@ async function activateEtsyConnectToken() {
       showToast(result.message || "Etsy session activation failed.", "error");
       return false;
     }
+    const payload = unwrapResponse(result, result);
+    persistAuthToken(payload.auth_token || result.auth_token);
     const cleanUrl = new URL(window.location.href);
     cleanUrl.searchParams.delete("connect_token");
     cleanUrl.searchParams.delete("email");
@@ -1902,6 +1931,7 @@ onboardingFormEl?.addEventListener("submit", async (event) => {
       setStatus("Failed");
       return;
     }
+    persistAuthToken(sessionPayload.auth_token || result.auth_token);
     const normalizedSession = {
       ...sessionPayload,
       onboarding_completed: true,

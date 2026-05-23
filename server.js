@@ -1,6 +1,7 @@
 import dotenv from "dotenv";
 import express from "express";
 import cookieSession from "cookie-session";
+import jwt from "jsonwebtoken";
 import fs from "node:fs/promises";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
@@ -26,6 +27,7 @@ const runtimeDataDir = path.join(process.env.ACOPES_DATA_DIR || "/tmp", "acopes-
 const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
 const MAKE_RESPONSE_SECRET = (process.env.MAKE_RESPONSE_SECRET || "").trim();
+const SESSION_SECRET = process.env.SESSION_SECRET || "acopes2026secret";
 const logsPath = path.join(runtimeDataDir, "automation-logs.json");
 const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
 const listingsSeedPath = path.join(seedDataDir, "listings.json");
@@ -100,7 +102,7 @@ app.use((_req, res, next) => {
 });
 app.use(cookieSession({
   name: "acopes_session",
-  keys: [process.env.SESSION_SECRET || "acopes2026secret"],
+  keys: [SESSION_SECRET],
   maxAge: 7 * 24 * 60 * 60 * 1000,
   secure: true,
   sameSite: "none",
@@ -207,6 +209,25 @@ app.use(async (req, res, next) => {
   next();
 });
 
+app.use((req, _res, next) => {
+  const header = String(req.headers.authorization || "");
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (!match) {
+    next();
+    return;
+  }
+  try {
+    const payload = jwt.verify(match[1], SESSION_SECRET);
+    if (payload?.email) req.session.email = normalizeEmail(payload.email);
+    if (payload?.user_id) req.session.user_id = payload.user_id;
+    if (payload?.etsy_auth) req.session.etsy_auth = payload.etsy_auth;
+    req.session.onboarding_completed = true;
+  } catch (error) {
+    console.log("[JWT AUTH] invalid token", { message: error instanceof Error ? error.message : String(error) });
+  }
+  next();
+});
+
 app.use(async (req, _res, next) => {
   if (!req.path.startsWith("/api/") && !req.path.startsWith("/auth/")) {
     next();
@@ -232,6 +253,18 @@ function sessionEmail(req) {
 function belongsToSessionEmail(item = {}, req) {
   const email = sessionEmail(req);
   return Boolean(email && normalizeEmail(item.email) === email);
+}
+
+function createAuthToken(user = {}, etsyAuth = null) {
+  return jwt.sign(
+    {
+      email: normalizeEmail(user.email),
+      user_id: user.id || user.user_id || "",
+      etsy_auth: etsyAuth || user.etsy_auth || null
+    },
+    SESSION_SECRET,
+    { expiresIn: "7d" }
+  );
 }
 
 async function ensureLogsFile() {
@@ -2266,7 +2299,11 @@ app.post("/api/etsy/activate-token", async (req, res) => {
   req.session.etsy_auth = user.etsy_auth;
   req.user = user;
   req.etsyAuth = user.etsy_auth;
-  res.json(successResponse({ status: "activated", etsy: await etsyTokenStatus(user.etsy_auth) }, "Etsy session activated"));
+  res.json(successResponse({
+    status: "activated",
+    auth_token: createAuthToken(user, user.etsy_auth),
+    etsy: await etsyTokenStatus(user.etsy_auth)
+  }, "Etsy session activated"));
 });
 
 app.post("/api/etsy/disconnect", requireUser, async (req, res) => {
@@ -2352,7 +2389,10 @@ app.post("/api/onboarding", async (req, res) => {
   req.session.email = email;
   req.session.user_id = user.id;
   req.session.etsy_auth = user.etsy_auth || req.session.etsy_auth || null;
-  res.json(successResponse(sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) }), "Onboarding completed"));
+  res.json(successResponse({
+    ...sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) }),
+    auth_token: createAuthToken(user, req.session.etsy_auth)
+  }, "Onboarding completed"));
 });
 
 app.get("/api/analytics", async (_req, res) => {
