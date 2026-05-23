@@ -9,6 +9,7 @@ let etsySellerAccountRequired = false;
 const selectedListingIds = new Set();
 const listingOptimizationDebug = new Map();
 const pendingOptimizationByListing = new Map();
+const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 const nativeFetch = window.fetch.bind(window);
@@ -46,6 +47,7 @@ const sendSelectedBtn = document.querySelector("#sendSelected");
 const sendBatchBtn = document.querySelector("#sendBatch");
 const refreshListingsBtn = document.querySelector("#refreshListings");
 const queueBatchBtn = document.querySelector("#queueBatch");
+const clearStaleQueueBtn = document.querySelector("#clearStaleQueue");
 const testMakeResponseBtn = document.querySelector("#testMakeResponse");
 const optimizationsEl = document.querySelector("#optimizations");
 const queueEl = document.querySelector("#queue");
@@ -134,20 +136,6 @@ const analysisFields = [
   ["giftability", "Giftability score"],
   ["competition", "Competition pressure"]
 ];
-const demoListings = [
-  {
-    listing_id: "demo-gold-box-chain",
-    name: "Gold Box Chain Necklace",
-    title: "Gold Box Chain Necklace, Minimal Layering Jewelry",
-    description: "A refined everyday gold necklace designed for minimalist styling, layering, and meaningful gifting.",
-    tags: ["gold necklace", "box chain", "layering necklace", "dainty jewelry", "gift for her", "minimalist style", "everyday jewelry"],
-    image_url: "",
-    type: "necklace",
-    style: "minimalist gold jewelry",
-    details_status: "demo"
-  }
-];
-
 function debugLog(message, data = null) {
   if (!DEBUG_MODE) return;
   if (data === null) {
@@ -787,6 +775,93 @@ function pruneSelectedListings() {
   });
 }
 
+function liveListingIds() {
+  return new Set(
+    products
+      .filter((product) => String(product.sync_source || "").toLowerCase() === "etsy_api" && /^\d+$/.test(String(product.listing_id || "")) && !BLOCKED_STALE_LISTING_IDS.has(String(product.listing_id || "")))
+      .map((product) => String(product.listing_id))
+  );
+}
+
+function selectedLiveProducts() {
+  const liveIds = liveListingIds();
+  return selectedProducts().filter((product) => liveIds.has(String(product.listing_id || "")));
+}
+
+function pruneStaleOptimizationState() {
+  const liveIds = liveListingIds();
+  optimizationRecords = optimizationRecords.filter((record) => liveIds.has(String(record.listing_id || "")));
+  queueRecords = queueRecords.filter((item) => liveIds.has(String(item.listing_id || "")));
+  [...pendingOptimizationByListing.keys()].forEach((listingId) => {
+    if (!liveIds.has(String(listingId))) pendingOptimizationByListing.delete(listingId);
+  });
+  [...listingOptimizationDebug.keys()].forEach((listingId) => {
+    if (!liveIds.has(String(listingId))) listingOptimizationDebug.delete(listingId);
+  });
+}
+
+function liveListingById(id = "") {
+  const target = String(id || "");
+  return products.find((product) => String(product.listing_id || "") === target && String(product.sync_source || "").toLowerCase() === "etsy_api") || null;
+}
+
+function pruneRecordsAgainstLiveCache(records = [], label = "state") {
+  const liveIds = liveListingIds();
+  console.log("[STATE RESTORE]", { label, incoming: records.length, live_count: liveIds.size });
+  console.log("[LIVE CACHE IDS]", [...liveIds]);
+  const kept = [];
+  for (const record of records) {
+    const queueId = String(record.listing_id || "");
+    if (BLOCKED_STALE_LISTING_IDS.has(queueId)) {
+      console.log("[BLOCKED DEMO ID 4384247178]", { label, queue_listing_id: queueId });
+      continue;
+    }
+    const matched = liveIds.has(queueId);
+    console.log("[QUEUE PRUNE]", { label, queue_listing_id: queueId, matched });
+    if (matched) {
+      console.log("[LIVE MATCH VERIFIED]", { label, live_listing_id: queueId, queue_listing_id: queueId });
+      kept.push(record);
+    } else {
+      console.log("[STALE STATE REMOVED]", { label, queue_listing_id: queueId || "missing" });
+    }
+  }
+  return kept;
+}
+
+async function hardResetStaleQueue() {
+  console.log("[HARD RESET STALE QUEUE]");
+  optimizationRecords = [];
+  queueRecords = [];
+  selectedListingIds.clear();
+  pendingOptimizationByListing.clear();
+  listingOptimizationDebug.clear();
+  seenOptimizationIds.clear();
+  products = products.filter((product) => !BLOCKED_STALE_LISTING_IDS.has(String(product.listing_id || "")));
+  try {
+    for (const storage of [localStorage, sessionStorage]) {
+      Object.keys(storage)
+        .filter((key) => /acopes|etsy|optimization|queue|listing/i.test(key))
+        .forEach((key) => storage.removeItem(key));
+    }
+  } catch {
+    // Storage can be locked down; state reset above is still enough for this session.
+  }
+  try {
+    const response = await fetch("/api/clear-stale-queue", { method: "POST" });
+    const result = await parseJsonResponse(response);
+    console.log("[BACKEND STALE QUEUE CLEARED]", result);
+  } catch (error) {
+    console.log("[BACKEND STALE QUEUE CLEARED]", { ok: false, error: error instanceof Error ? error.message : String(error) });
+  }
+  renderProducts();
+  renderOptimizations(optimizationRecords);
+  renderQueue(queueRecords);
+  renderHistorySidebar(optimizationRecords);
+  renderScoreDashboard(optimizationRecords);
+  renderBatchDashboard();
+  renderTopKpis(optimizationRecords);
+}
+
 function selectedProducts() {
   if (!selectedListingIds.size) {
     document.querySelectorAll("[data-product-id]:checked").forEach((checkbox) => {
@@ -1140,7 +1215,13 @@ function handleAuthOrBillingError(response, result) {
 }
 
 function requireSelectedProducts() {
-  const selected = selectedProducts();
+  const rawSelected = selectedProducts();
+  const selected = selectedLiveProducts();
+  if (rawSelected.length && !selected.length) {
+    showToast("Refresh listings and regenerate optimization", "error");
+    setStatus("Failed");
+    return [];
+  }
   if (!selected.length) {
     showToast("Select at least one listing first.", "error");
     setStatus("Failed");
@@ -1178,6 +1259,7 @@ function renderProducts() {
   const latestByListing = new Map(optimizationRecords.filter(recordOutputValid).map((record) => [String(record.listing_id), record]));
   productsEl.innerHTML = products
     .map((product, index) => {
+      if (String(product.listing_id) === "4384247178") return "";
       const selectionId = productSelectionId(product, index);
       const optimization = latestByListing.get(String(product.listing_id));
       const debugInfo = listingOptimizationDebug.get(String(product.listing_id));
@@ -1201,6 +1283,7 @@ function renderProducts() {
             <div class="product-topline">
               <strong>${escapeHtml(product.name)}</strong>
               ${product.send_status === "sent" ? `<b class="completed-badge">Sent to Etsy</b>` : ""}
+              <small>Live ID: ${escapeHtml(product.listing_id || "none")} · Queue ID: ${escapeHtml(optimization?.listing_id || product.queue_listing_id || "none")}</small>
               <small>ID ${escapeHtml(product.listing_id)}${product.views ? ` · ${escapeHtml(product.views)} views` : ""}</small>
             </div>
             <div class="mini-compare">
@@ -1276,7 +1359,19 @@ function renderLogs(logs) {
 }
 
 function renderOptimizations(records) {
-  records = records.filter(recordOutputValid);
+  const liveIds = liveListingIds();
+  console.log("[LIVE CACHE IDS]", [...liveIds]);
+  records = records.filter((record) => {
+    const queueId = String(record.listing_id || "");
+    if (BLOCKED_STALE_LISTING_IDS.has(queueId)) {
+      console.log("[BLOCKED DEMO ID 4384247178]", { type: "optimization", queue_listing_id: queueId });
+      return false;
+    }
+    const allowed = recordOutputValid(record) && liveIds.has(queueId);
+    console.log("[QUEUE RENDER]", { type: "optimization", queue_listing_id: queueId, live: allowed });
+    if (!allowed && queueId) console.log("[QUEUE ID BLOCKED]", { queue_listing_id: queueId, reason: "not_in_live_cache" });
+    return allowed;
+  });
   if (!records.length) {
     optimizationsEl.innerHTML = `<div class="empty">No AI optimizations received yet.</div>`;
     return;
@@ -1285,6 +1380,19 @@ function renderOptimizations(records) {
   optimizationsEl.innerHTML = records
     .map(
       (record) => {
+        if (!products.some((product) => String(product.listing_id) === String(record.listing_id))) {
+          console.warn("[STALE CARD BLOCKED]", record.listing_id);
+          return "";
+        }
+        const liveListing = liveListingById(record.listing_id);
+        if (!liveListing) {
+          return `
+            <article class="optimization-card">
+              <strong>Refresh listings and regenerate optimization</strong>
+              <small>Live ID: none · Queue ID: ${escapeHtml(record.listing_id || "none")}</small>
+            </article>
+          `;
+        }
         const optimizedTitle = optimizedTitleFrom(record.after, {});
         const optimizedTags = optimizedTagsFrom(record.after);
         const recordStatus = record.status || "";
@@ -1295,6 +1403,7 @@ function renderOptimizations(records) {
         <article class="optimization-card" data-view="after">
           <header>
             <strong>${escapeHtml(record.listing_name)}</strong>
+            <small>Live ID: ${escapeHtml(liveListing.listing_id || "none")} · Queue ID: ${escapeHtml(record.listing_id || "none")}</small>
             <span class="draft-status ${safeStatusClass(recordStatus)}">${escapeHtml(recordStatus.replaceAll("_", " "))}</span>
             <span class="source-badge">${escapeHtml(optimizationBadge(outputSource, record.scores?.confidence_score))}</span>
           </header>
@@ -1373,22 +1482,47 @@ function renderOptimizations(records) {
 }
 
 function renderQueue(items) {
+  const liveIds = liveListingIds();
+  console.log("[LIVE CACHE IDS]", [...liveIds]);
+  items = items.filter((item) => {
+    const queueId = String(item.listing_id || "");
+    if (BLOCKED_STALE_LISTING_IDS.has(queueId)) {
+      console.log("[BLOCKED DEMO ID 4384247178]", { type: "queue", queue_listing_id: queueId });
+      return false;
+    }
+    const allowed = liveIds.has(queueId);
+    console.log("[QUEUE RENDER]", { type: "queue", queue_listing_id: queueId, live: allowed });
+    if (!allowed && queueId) console.log("[QUEUE ID BLOCKED]", { queue_listing_id: queueId, reason: "not_in_live_cache" });
+    return allowed;
+  });
   if (!items.length) {
     queueEl.innerHTML = `<div class="empty">No listings queued.</div>`;
     return;
   }
   queueEl.innerHTML = items
     .map(
-      (item) => `
+      (item) => {
+        const liveListing = liveListingById(item.listing_id);
+        if (!liveListing) {
+          return `
+            <article class="queue-item blocked">
+              <strong>Refresh listings and regenerate optimization</strong>
+              <span>Live ID: none · Queue ID: ${escapeHtml(item.listing_id || "none")}</span>
+            </article>
+          `;
+        }
+        return `
         <article class="queue-item">
           <div>
             <strong>${escapeHtml(item.listing_name)}</strong>
+            <small>Live ID: ${escapeHtml(liveListing.listing_id || "none")} · Queue ID: ${escapeHtml(item.listing_id || "none")}</small>
             <span><b class="queue-badge ${safeStatusClass(item.status)}">${escapeHtml(item.status)}</b> ${escapeHtml(item.priority)}</span>
           </div>
           <div class="progress"><i style="width:${item.status === "queued" ? 35 : item.status === "failed" ? 12 : 100}%"></i></div>
           ${item.status === "failed" ? `<button data-queue-retry="${escapeAttribute(item.id)}">Retry</button>` : ""}
         </article>
-      `
+      `;
+      }
     )
     .join("");
 }
@@ -1517,7 +1651,12 @@ async function refreshLogs() {
 async function refreshOptimizations() {
   const response = await fetch("/api/optimizations");
   const result = await response.json();
-  optimizationRecords = unwrapResponse(result, []).filter(recordOutputValid);
+  const restored = unwrapResponse(result, []).filter(recordOutputValid);
+  const liveIds = new Set(products.map((product) => String(product.listing_id)));
+  optimizationRecords = restored.filter((record) => {
+    const id = String(record.listing_id || "");
+    return id && id !== "4384247178" && liveIds.has(id);
+  });
   renderOptimizations(optimizationRecords);
   renderScoreDashboard(optimizationRecords);
   renderHistorySidebar(optimizationRecords);
@@ -1530,7 +1669,11 @@ async function refreshOptimizations() {
 async function refreshQueue() {
   const response = await fetch("/api/queue");
   const result = await response.json();
-  queueRecords = unwrapResponse(result, []);
+  const liveIds = new Set(products.map((product) => String(product.listing_id)));
+  queueRecords = unwrapResponse(result, []).filter((item) => {
+    const id = String(item.listing_id || "");
+    return id && id !== "4384247178" && liveIds.has(id);
+  });
   renderQueue(queueRecords);
   renderBatchDashboard();
   renderTopKpis(optimizationRecords);
@@ -1571,6 +1714,11 @@ async function refreshListings() {
     etsyConnectionRequired = false;
     etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
+    optimizationRecords = [];
+    queueRecords = [];
+    seenOptimizationIds.clear();
+    pendingOptimizationByListing.clear();
+    listingOptimizationDebug.clear();
     if (payload.etsy) renderEtsyAuthStatus(payload.etsy);
     products.sort((a, b) => {
       if (a.details_status === "synced" && b.details_status !== "synced") return -1;
@@ -1578,7 +1726,14 @@ async function refreshListings() {
       return String(a.title || "").localeCompare(String(b.title || ""));
     });
     pruneSelectedListings();
+    pruneStaleOptimizationState();
+    optimizationRecords = pruneRecordsAgainstLiveCache(optimizationRecords, "optimizationRecords_after_listings");
+    queueRecords = pruneRecordsAgainstLiveCache(queueRecords, "queueRecords_after_listings");
     renderProducts();
+    renderOptimizations(optimizationRecords);
+    renderQueue(queueRecords);
+    renderHistorySidebar(optimizationRecords);
+    renderScoreDashboard(optimizationRecords);
     renderCommerceIntelligence();
     renderBatchDashboard();
     renderTopKpis(optimizationRecords);
@@ -1681,7 +1836,16 @@ async function sendBatch(productsToSend) {
   setStatus("Sending");
   sendBatchBtn.disabled = true;
   try {
-    const productsWithOptimizations = productsToSend.map((listing) => {
+    const liveIds = liveListingIds();
+    console.log("[SEND BATCH LIVE IDS ONLY]", [...liveIds]);
+    if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(String(listing.listing_id || "")) || !liveIds.has(String(listing.listing_id || "")))) {
+      console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map((listing) => String(listing.listing_id || "")) });
+      showToast("Refresh listings and regenerate optimization", "error");
+      setStatus("Failed");
+      return;
+    }
+    const safeBatch = productsToSend.filter((listing) => liveIds.has(String(listing.listing_id)) && String(listing.listing_id) !== "4384247178");
+    const productsWithOptimizations = safeBatch.map((listing) => {
       const listingId = String(listing.listing_id || "");
       const record = optimizationRecords.find((item) => String(item.listing_id || "") === listingId && recordOutputValid(item));
       if (!record?.after) return listing;
@@ -1713,7 +1877,7 @@ async function sendBatch(productsToSend) {
     if (result.session) renderSession(result.session);
     const responseResults = Array.isArray(result.results) ? result.results : Array.isArray(result.data?.results) ? result.data.results : [];
     const sendMethod = result.send_method || result.data?.send_method || "";
-    productsToSend.forEach((listing, index) => {
+    safeBatch.forEach((listing, index) => {
       const itemResult = responseResults[index] || {};
       if (sendMethod === "etsy_api" || itemResult.status === "sent") markListingSent(listing, itemResult);
       else applyOptimizationResponse(listing, itemResult);
@@ -1734,11 +1898,9 @@ async function initializeDashboard() {
   if (dashboardInitialized) return;
   dashboardInitialized = true;
   debugLog("dashboard initialized");
-  await Promise.allSettled([
-    refreshEtsyStatus(),
-    refreshListings(),
-    refreshLogs()
-  ]);
+  await refreshEtsyStatus();
+  await refreshListings();
+  await refreshLogs();
 }
 
 sendSelectedBtn?.addEventListener("click", async () => {
@@ -1755,6 +1917,11 @@ sendBatchBtn?.addEventListener("click", async () => {
   const batch = requireSelectedProducts();
   if (!batch.length) return;
   await sendBatch(batch);
+});
+
+clearStaleQueueBtn?.addEventListener("click", async () => {
+  await hardResetStaleQueue();
+  showToast("Stale queue cleared. Refresh Etsy Listings and regenerate optimization.", "success");
 });
 
 refreshListingsBtn?.addEventListener("click", refreshListings);

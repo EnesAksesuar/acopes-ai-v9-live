@@ -2750,11 +2750,76 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
 
 app.get("/api/optimizations", requireUser, async (req, res) => {
   const records = await readRuntimeJsonFast(optimizationsPath, optimizationsSeedPath, []);
-  res.json(successResponse(records.filter((record) => belongsToSessionEmail(record, req)).map(enrichOptimizationRecord), "Optimizations loaded"));
+  const liveListings = await readListingsCache();
+  const liveIds = new Set(
+    liveListings
+      .filter((item) => item.sync_source === "etsy_api")
+      .map((item) => normalizeListingId(item.listing_id || item.id))
+      .filter(Boolean)
+  );
+  const filtered = records
+    .filter((record) => belongsToSessionEmail(record, req))
+    .filter((record) => {
+      const id = normalizeListingId(record.listing_id);
+      const keep = id && id !== "4384247178" && liveIds.has(id);
+      console.log(keep ? "[OPTIMIZATION PRUNE]" : "[STALE RECORD REMOVED]", {
+        listing_id: id || "missing",
+        live: liveIds.has(id),
+        blocked: id === "4384247178"
+      });
+      return keep;
+    });
+  res.json(successResponse(filtered.map(enrichOptimizationRecord), "Optimizations loaded"));
 });
 
 app.get("/api/queue", requireUser, async (req, res) => {
-  res.json(successResponse((await readRuntimeJsonFast(queuePath, queueSeedPath, [])).filter((item) => belongsToSessionEmail(item, req)), "Queue loaded"));
+  const liveListings = await readListingsCache();
+  const liveIds = new Set(
+    liveListings
+      .filter((item) => item.sync_source === "etsy_api")
+      .map((item) => normalizeListingId(item.listing_id || item.id))
+      .filter(Boolean)
+  );
+  const items = await readRuntimeJsonFast(queuePath, queueSeedPath, []);
+  const filtered = items
+    .filter((item) => belongsToSessionEmail(item, req))
+    .filter((item) => {
+      const id = normalizeListingId(item.listing_id);
+      const keep = id && id !== "4384247178" && liveIds.has(id);
+      console.log(keep ? "[QUEUE PRUNE]" : "[STALE RECORD REMOVED]", {
+        listing_id: id || "missing",
+        live: liveIds.has(id),
+        blocked: id === "4384247178"
+      });
+      return keep;
+    });
+  res.json(successResponse(filtered, "Queue loaded"));
+});
+
+app.post("/api/clear-stale-queue", requireUser, async (req, res) => {
+  const liveListings = (await readListingsCache()).filter((listing) => String(listing.sync_source || "") === "etsy_api");
+  const liveIds = new Set(liveListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
+  const blockedIds = new Set(["4384247178"]);
+  const isLive = (item) => {
+    const listingId = normalizeListingId(item.listing_id || item.id);
+    return listingId && liveIds.has(listingId) && !blockedIds.has(listingId) && belongsToSessionEmail(item, req);
+  };
+  const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
+  const optimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
+  const nextQueue = queue.filter(isLive);
+  const nextOptimizations = optimizations.filter(isLive);
+  await writeJsonFile(queuePath, nextQueue);
+  await writeJsonFile(optimizationsPath, nextOptimizations);
+  console.log("[BACKEND STALE QUEUE CLEARED]", {
+    live_count: liveIds.size,
+    queue_removed: queue.length - nextQueue.length,
+    optimizations_removed: optimizations.length - nextOptimizations.length
+  });
+  res.json(successResponse({
+    live_listing_ids: [...liveIds],
+    queue_removed: queue.length - nextQueue.length,
+    optimizations_removed: optimizations.length - nextOptimizations.length
+  }, "Stale queue cleared"));
 });
 
 app.get("/api/listings", requireUser, async (req, res) => {
