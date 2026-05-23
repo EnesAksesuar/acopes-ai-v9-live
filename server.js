@@ -102,8 +102,9 @@ app.use(cookieSession({
   name: "acopes_session",
   keys: [process.env.SESSION_SECRET || "acopes2026secret"],
   maxAge: 7 * 24 * 60 * 60 * 1000,
-  secure: process.env.NODE_ENV === "production",
-  sameSite: "lax"
+  secure: true,
+  sameSite: "none",
+  httpOnly: true
 }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -212,7 +213,7 @@ app.use(async (req, _res, next) => {
     return;
   }
   req.user = await getSessionUser(req.session);
-  req.etsyAuth = req.session?.etsy_auth || req.user?.etsy_auth || {};
+  req.etsyAuth = await resolveRequestEtsyAuth(req);
   next();
 });
 
@@ -383,6 +384,22 @@ async function getSessionUser(session) {
   }
 
   return user;
+}
+
+async function resolveRequestEtsyAuth(req) {
+  if (req.session?.etsy_auth?.access_token || req.session?.etsy_auth?.refresh_token) {
+    return req.session.etsy_auth;
+  }
+  const user = req.user || await getSessionUser(req.session);
+  if (user?.etsy_auth?.access_token || user?.etsy_auth?.refresh_token) {
+    req.user = user;
+    req.session.email ||= user.email;
+    req.session.user_id ||= user.id;
+    req.session.etsy_auth = user.etsy_auth;
+    req.etsyAuth = user.etsy_auth;
+    return user.etsy_auth;
+  }
+  return {};
 }
 
 async function updateUser(userId, patch) {
@@ -2073,7 +2090,7 @@ app.get("/api/session", async (req, res) => {
 
 app.get("/api/etsy/status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || {};
+    const tokens = await resolveRequestEtsyAuth(req);
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -2082,7 +2099,7 @@ app.get("/api/etsy/status", async (req, res) => {
 
 app.get("/api/auth-status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || {};
+    const tokens = await resolveRequestEtsyAuth(req);
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -2091,7 +2108,7 @@ app.get("/api/auth-status", async (req, res) => {
 
 app.get("/api/auth/status", async (req, res) => {
   try {
-    const tokens = req.etsyAuth || {};
+    const tokens = await resolveRequestEtsyAuth(req);
     res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
@@ -2170,6 +2187,9 @@ async function finishEtsyOAuth(req, res) {
       etsyDebug("Shop status resolution skipped", { error: error instanceof Error ? error.message : String(error) });
     }
     await persistRequestEtsyAuth(req, res, resolvedTokens);
+    console.log("[CALLBACK] email saved to session:", req.session?.email ? "yes" : "no");
+    console.log("[CALLBACK] etsy_auth saved to session:", req.session?.etsy_auth ? "yes" : "no");
+    console.log("[CALLBACK] session keys:", Object.keys(req.session || {}));
     console.log("[OAUTH SAVE]", {
       email: req.session?.email || "",
       user_id: resolvedTokens.user_id || "",
@@ -2212,7 +2232,7 @@ app.post("/api/etsy/sync", requireUser, async (req, res) => {
       res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(req.etsyAuth || {})));
       return;
     }
-    const userTokens = req.etsyAuth || {};
+    const userTokens = await resolveRequestEtsyAuth(req);
     if (!userTokens.access_token) {
       res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
@@ -2238,7 +2258,7 @@ app.post("/api/etsy/sync", requireUser, async (req, res) => {
 
 app.post("/api/etsy/refresh-sync", requireUser, async (req, res) => {
   try {
-    const userTokens = req.etsyAuth || {};
+    const userTokens = await resolveRequestEtsyAuth(req);
     if (!userTokens.access_token) {
       res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
       return;
@@ -2318,7 +2338,7 @@ app.get("/api/queue", requireUser, async (req, res) => {
 
 app.get("/api/listings", requireUser, async (req, res) => {
   try {
-    const userTokens = req.session?.etsy_auth || req.user?.etsy_auth || {};
+    const userTokens = await resolveRequestEtsyAuth(req);
     etsyDebug("Listings auth snapshot", {
       hasAccessToken: Boolean(userTokens.access_token),
       hasRefreshToken: Boolean(userTokens.refresh_token),
