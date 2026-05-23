@@ -2205,7 +2205,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+  const listingPath = `/listings/${encodeURIComponent(liveListingId)}`;
   const verifyEndpoint = `${ETSY_API_BASE}${listingPath}`;
   console.log("[ETSY VERIFY LISTING GET]", {
     url: verifyEndpoint,
