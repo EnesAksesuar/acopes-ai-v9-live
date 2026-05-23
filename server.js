@@ -87,6 +87,14 @@ async function loadDotEnv(filePath) {
 
 app.use("/api/make-response", express.text({ type: "*/*", limit: "2mb" }));
 app.use(express.json());
+app.use("/api", (_req, res, next) => {
+  res.setTimeout(8000, () => {
+    if (!res.headersSent) {
+      res.status(504).json({ error: "timeout" });
+    }
+  });
+  next();
+});
 app.use((_req, res, next) => {
   res.setHeader("X-Content-Type-Options", "nosniff");
   res.setHeader("X-Frame-Options", "DENY");
@@ -352,6 +360,24 @@ async function readRuntimeJson(runtimePath, seedPath, fallback = []) {
       return fallback;
     }
   }
+}
+
+async function withTimeout(promise, timeoutMs = 3000, fallback = []) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve(fallback), timeoutMs);
+      })
+    ]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
+async function readRuntimeJsonFast(runtimePath, seedPath, fallback = []) {
+  return withTimeout(readRuntimeJson(runtimePath, seedPath, fallback), 3000, fallback);
 }
 
 async function updateSession(sessionId, patch) {
@@ -2372,12 +2398,12 @@ app.post("/api/waitlist", async (req, res) => {
 });
 
 app.get("/api/optimizations", requireUser, async (req, res) => {
-  const records = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
+  const records = await readRuntimeJsonFast(optimizationsPath, optimizationsSeedPath, []);
   res.json(successResponse(records.filter((record) => belongsToSessionEmail(record, req)).map(enrichOptimizationRecord), "Optimizations loaded"));
 });
 
 app.get("/api/queue", requireUser, async (req, res) => {
-  res.json(successResponse((await readRuntimeJson(queuePath, queueSeedPath, [])).filter((item) => belongsToSessionEmail(item, req)), "Queue loaded"));
+  res.json(successResponse((await readRuntimeJsonFast(queuePath, queueSeedPath, [])).filter((item) => belongsToSessionEmail(item, req)), "Queue loaded"));
 });
 
 app.get("/api/listings", requireUser, async (req, res) => {

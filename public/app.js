@@ -1642,9 +1642,7 @@ async function initializeDashboard() {
   await Promise.allSettled([
     refreshEtsyStatus(),
     refreshListings(),
-    refreshLogs(),
-    refreshOptimizations(),
-    refreshQueue()
+    refreshLogs()
   ]);
 }
 
@@ -1743,6 +1741,10 @@ logsEl?.addEventListener("click", async (event) => {
 });
 
 optimizationsEl?.addEventListener("click", async (event) => {
+  if (!optimizationRecords.length && !event.target.closest("button,[data-preview],[data-rewrite-mode],[data-toggle],[data-approve]")) {
+    await refreshOptimizations();
+    return;
+  }
   const preview = event.target.closest("[data-preview]");
   if (preview) {
     modalImageEl.src = preview.dataset.preview;
@@ -1892,6 +1894,10 @@ onboardingFormEl?.addEventListener("submit", async (event) => {
 });
 
 queueEl?.addEventListener("click", async (event) => {
+  if (!queueRecords.length && !event.target.closest("[data-queue-retry]")) {
+    await refreshQueue();
+    return;
+  }
   const button = event.target.closest("[data-queue-retry]");
   if (!button) return;
   await fetch(`/api/queue/${button.dataset.queueRetry}/retry`, { method: "POST" });
@@ -1916,8 +1922,3 @@ refreshSession().then(async (session) => {
     renderCommerceIntelligence();
   }
 });
-setInterval(() => {
-  if (!dashboardInitialized) return;
-  refreshOptimizations();
-  refreshQueue();
-}, 4000);
