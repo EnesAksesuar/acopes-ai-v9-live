@@ -309,12 +309,33 @@ async function writeLogs(logs) {
   await fs.writeFile(logsPath, `${JSON.stringify(logs, null, 2)}\n`, "utf8");
 }
 
-async function readListingsCache() {
+async function readListingsCache(expectedShopId = "") {
+  const normalizedExpectedShopId = normalizeListingId(expectedShopId);
   try {
+    if (normalizedExpectedShopId) {
+      const meta = await readListingsMeta();
+      console.log("[LISTINGS CACHE SHOP CHECK]", {
+        expected_shop_id: normalizedExpectedShopId,
+        cache_shop_id: normalizeListingId(meta.shop_id || "")
+      });
+      if (normalizeListingId(meta.shop_id || "") !== normalizedExpectedShopId) {
+        console.log("[LISTINGS CACHE IGNORED]", {
+          expected_shop_id: normalizedExpectedShopId,
+          cache_shop_id: normalizeListingId(meta.shop_id || "")
+        });
+        console.log("[FORCE RESYNC REQUIRED]", { reason: "shop_id_mismatch" });
+        return [];
+      }
+    }
     const listings = parseJsonText(await fs.readFile(listingsCachePath, "utf8"), []);
     if (Array.isArray(listings) && listings.length) return listings;
   } catch {
     // Fall back to seeded cache files for backward compatibility.
+  }
+  if (normalizedExpectedShopId) {
+    console.log("[LISTINGS CACHE IGNORED]", { expected_shop_id: normalizedExpectedShopId, reason: "no_authenticated_cache" });
+    console.log("[FORCE RESYNC REQUIRED]", { reason: "missing_authenticated_cache" });
+    return [];
   }
   try {
     const listings = parseJsonText(await fs.readFile(listingsSeedPath, "utf8"), []);
@@ -2028,7 +2049,10 @@ async function syncEtsyListings(tokens = null, res = null, req = null) {
     ...listing,
     sync_source: "etsy_api",
     details_status: "synced"
-  })).filter((listing) => listing.listing_id && listing.title);
+  })).filter((listing) => {
+    const listingShopId = normalizeListingId(listing.shop_id || listing.Shop?.shop_id || "");
+    return listing.listing_id && listing.title && (!listingShopId || listingShopId === normalizeListingId(tokens.shop_id));
+  });
   console.log("Live Etsy listing count", { count: listings.length });
   await writeListingsCache(listings, {
     source: "etsy_api",
@@ -2080,7 +2104,10 @@ function normalizeTitleForMatch(value = "") {
 }
 
 async function resolveLiveListingForEtsyPut(product = {}, shopId = "") {
-  const listings = (await readListingsCache()).filter((listing) => String(listing.sync_source || "") === "etsy_api");
+  const listings = (await readListingsCache(shopId)).filter((listing) => String(listing.sync_source || "") === "etsy_api");
+  if (!listings.length) {
+    console.log("[FORCE RESYNC REQUIRED]", { shop_id: shopId, reason: "empty_or_mismatched_cache" });
+  }
   const liveIds = listings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean);
   const requestedId = normalizeListingId(product.listing_id || product.id);
   console.log("[LIVE LISTING IDS]", {
@@ -2200,6 +2227,32 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     status: verifyResponse.status,
     body: verifyPayload
   });
+  if (verifyResponse.status === 404) {
+    const cached = await readListingsCache(shopId);
+    const nextCache = cached.filter((listing) => normalizeListingId(listing.listing_id || listing.id) !== liveListingId);
+    await writeListingsCache(nextCache, {
+      source: "etsy_api",
+      shop_id: shopId,
+      shop_name: tokens.shop_name,
+      shop_url: tokens.shop_url
+    });
+    console.log("[LISTING REMOVED FROM CACHE]", {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      before_count: cached.length,
+      after_count: nextCache.length
+    });
+    const error = new Error("Listing is not accessible in this Etsy shop. Refresh Etsy Listings.");
+    error.code = "etsy_resource_not_found";
+    error.status = 404;
+    error.payload = {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      etsy_status: verifyResponse.status,
+      etsy_body: verifyPayload
+    };
+    throw error;
+  }
 
   let endpoint = `${ETSY_API_BASE}${listingPath}`;
   console.log("[ETSY PUT BASE USED]", ETSY_API_BASE);
@@ -2802,7 +2855,8 @@ app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
 
 app.get("/api/optimizations", requireUser, async (req, res) => {
   const records = await readRuntimeJsonFast(optimizationsPath, optimizationsSeedPath, []);
-  const liveListings = await readListingsCache();
+  const userTokens = await resolveRequestEtsyAuth(req);
+  const liveListings = await readListingsCache(userTokens.shop_id);
   const liveIds = new Set(
     liveListings
       .filter((item) => item.sync_source === "etsy_api")
@@ -2825,7 +2879,8 @@ app.get("/api/optimizations", requireUser, async (req, res) => {
 });
 
 app.get("/api/queue", requireUser, async (req, res) => {
-  const liveListings = await readListingsCache();
+  const userTokens = await resolveRequestEtsyAuth(req);
+  const liveListings = await readListingsCache(userTokens.shop_id);
   const liveIds = new Set(
     liveListings
       .filter((item) => item.sync_source === "etsy_api")
@@ -2849,7 +2904,8 @@ app.get("/api/queue", requireUser, async (req, res) => {
 });
 
 app.post("/api/clear-stale-queue", requireUser, async (req, res) => {
-  const liveListings = (await readListingsCache()).filter((listing) => String(listing.sync_source || "") === "etsy_api");
+  const userTokens = await resolveRequestEtsyAuth(req);
+  const liveListings = (await readListingsCache(userTokens.shop_id)).filter((listing) => String(listing.sync_source || "") === "etsy_api");
   const liveIds = new Set(liveListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
   const blockedIds = new Set(["4384247178"]);
   const isLive = (item) => {
@@ -2924,7 +2980,10 @@ app.get("/api/listings", requireUser, async (req, res) => {
       ...listing,
       sync_source: "etsy_api",
       details_status: "synced"
-    })).filter((listing) => listing.listing_id && listing.title);
+    })).filter((listing) => {
+      const listingShopId = normalizeListingId(listing.shop_id || listing.Shop?.shop_id || "");
+      return listing.listing_id && listing.title && (!listingShopId || listingShopId === normalizeListingId(tokens.shop_id));
+    });
     console.log("Etsy API listing count", { count: listings.length });
     await writeListingsCache(listings, {
       source: "etsy_api",
