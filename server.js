@@ -1449,11 +1449,26 @@ function confidenceLabel(score = 0) {
 async function createOptimizationRecord({ listing, optimized, source = "make_response", request_log_id = null }) {
   const normalized = ensureOptimizationContent(normalizeOptimization(optimized), listing);
   const scores = scoreOptimization(normalized);
-  const listingId = normalizeListingId(listing.listing_id || listing.id);
+  const idCandidates = [
+    ["listing.listing_id", listing?.listing_id],
+    ["listing.id", listing?.id],
+    ["optimized.listing_id", optimized?.listing_id],
+    ["normalized.listing_id", normalized?.listing_id],
+    ["optimized.id", optimized?.id]
+  ];
+  const [resolvedSource, resolvedRawId] = idCandidates.find(([, value]) => normalizeListingId(value)) || ["missing", ""];
+  const resolvedListingId = normalizeListingId(resolvedRawId);
+  console.log("[OPTIMIZATION RECORD ID]", { resolvedListingId, source: resolvedSource });
+  if (!resolvedListingId) {
+    const error = new Error("Missing listing_id while creating optimization record.");
+    error.code = "missing_listing_id";
+    error.status = 400;
+    throw error;
+  }
   const record = {
     id: crypto.randomUUID(),
-    listing_id: liveListingId,
-    original_listing_id: listingId,
+    listing_id: resolvedListingId,
+    original_listing_id: resolvedListingId,
     email: normalizeEmail(listing.email || optimized.email),
     listing_name: listing.name,
     created_at: new Date().toISOString(),
@@ -1491,7 +1506,7 @@ async function createOptimizationRecord({ listing, optimized, source = "make_res
   };
 
   const history = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
-  const nextHistory = history.filter((item) => normalizeListingId(item.listing_id || item.id) !== listingId);
+  const nextHistory = history.filter((item) => normalizeListingId(item.listing_id || item.id) !== resolvedListingId);
   nextHistory.unshift(record);
   await writeJsonFile(optimizationsPath, nextHistory);
   return record;
@@ -2817,21 +2832,32 @@ app.get("/api/listings", requireUser, async (req, res) => {
 });
 
 app.post("/api/optimize", requireUser, async (req, res) => {
-  await incrementAnalytics("optimization_started");
-  const baseProduct = req.body.product || req.body.listing || req.body || {};
-  const product = { ...baseProduct, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || baseProduct.optimization_mode || "safe_seo" };
-  console.log("[OPTIMIZE START]", {
-    listing_name: product.name || product.title || product.listing_id || "unknown_listing",
-    optimization_mode: product.optimization_mode
-  });
-  const log = await sendToMakeWithTaxonomyRetry(product);
-  const user = await getSessionUser(req.session);
-  const responseBody = successResponse(
-    buildOptimizationResponsePayload(product, log, sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) })),
-    log.status === "completed" ? "Optimization queued" : "Optimization generated with fallback"
-  );
-  console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
-  res.status(200).json(responseBody);
+  try {
+    await incrementAnalytics("optimization_started");
+    const baseProduct = req.body.product || req.body.listing || req.body || {};
+    const product = { ...baseProduct, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || baseProduct.optimization_mode || "safe_seo" };
+    console.log("[OPTIMIZE START]", {
+      listing_name: product.name || product.title || product.listing_id || "unknown_listing",
+      optimization_mode: product.optimization_mode
+    });
+    const log = await sendToMakeWithTaxonomyRetry(product);
+    const user = await getSessionUser(req.session);
+    const responseBody = successResponse(
+      buildOptimizationResponsePayload(product, log, sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) })),
+      log.status === "completed" ? "Optimization queued" : "Optimization generated with fallback"
+    );
+    console.log("FINAL OPT RESPONSE:", JSON.stringify(responseBody, null, 2));
+    res.status(200).json(responseBody);
+  } catch (error) {
+    console.error("[OPTIMIZE ERROR]", error?.stack || error);
+    const status = error?.status && Number(error.status) >= 400 ? Number(error.status) : 500;
+    res.status(status).json({
+      ok: false,
+      success: false,
+      error: error?.code || "optimization_failed",
+      message: error instanceof Error ? error.message : String(error)
+    });
+  }
 });
 
 app.post("/api/send", requireUser, async (req, res) => {
