@@ -1,7 +1,6 @@
 import dotenv from "dotenv";
 import express from "express";
-import session from "express-session";
-import sessionFileStore from "session-file-store";
+import cookieSession from "cookie-session";
 import fs from "node:fs/promises";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
@@ -20,7 +19,6 @@ console.log("ENV DEBUG", {
 });
 
 const app = express();
-const FileStore = sessionFileStore(session);
 await loadDotEnv(path.join(__dirname, ".env"));
 const PORT = process.env.PORT || 4173;
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
@@ -36,7 +34,6 @@ const optimizationsPath = path.join(runtimeDataDir, "optimization-history.json")
 const optimizationsSeedPath = path.join(seedDataDir, "optimization-history.json");
 const queuePath = path.join(runtimeDataDir, "optimization-queue.json");
 const queueSeedPath = path.join(seedDataDir, "optimization-queue.json");
-const sessionsPath = path.join(runtimeDataDir, "sessions.json");
 const usersPath = path.join(runtimeDataDir, "users.json");
 const usersSeedPath = path.join(seedDataDir, "users.json");
 const etsyTokensPath = path.join(runtimeDataDir, "etsy-tokens.json");
@@ -45,7 +42,6 @@ const waitlistPath = path.join(runtimeDataDir, "waitlist.json");
 const analyticsPath = path.join(runtimeDataDir, "analytics.json");
 const analyticsSeedPath = path.join(seedDataDir, "analytics.json");
 const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
-const sessionStorePath = path.join(runtimeDataDir, "sessions");
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || "").trim();
 const ETSY_CLIENT_SECRET = (process.env.ETSY_CLIENT_SECRET || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
@@ -102,21 +98,12 @@ app.use((_req, res, next) => {
   res.setHeader("Permissions-Policy", "camera=(), microphone=(), geolocation=()");
   next();
 });
-app.use(session({
-  store: new FileStore({
-    path: sessionStorePath,
-    retries: 0,
-    ttl: 7 * 24 * 60 * 60
-  }),
-  name: "acopes.sid",
-  secret: process.env.SESSION_SECRET || "acopes-secret",
-  resave: false,
-  saveUninitialized: false,
-  cookie: {
-    secure: process.env.NODE_ENV === "production",
-    sameSite: "lax",
-    maxAge: 7 * 24 * 60 * 60 * 1000
-  }
+app.use(cookieSession({
+  name: "acopes_session",
+  keys: [process.env.SESSION_SECRET || "acopes2026secret"],
+  maxAge: 7 * 24 * 60 * 60 * 1000,
+  secure: process.env.NODE_ENV === "production",
+  sameSite: "lax"
 }));
 app.use(express.static(path.join(__dirname, "public")));
 
@@ -207,42 +194,15 @@ async function persistRequestEtsyAuth(req, res, tokens = {}) {
   return auth;
 }
 
-function sessionRecordId(session = {}) {
-  return session.acopes_session_id || session.legacy_session_id || session.id || "";
-}
-
-function applySessionRecord(target = {}, record = {}) {
-  for (const [key, value] of Object.entries(record || {})) {
-    if (key === "id") {
-      if (!target.acopes_session_id) target.acopes_session_id = value;
-      continue;
-    }
-    if (target[key] === undefined || target[key] === "") target[key] = value;
-  }
-}
-
 app.use(async (req, res, next) => {
-  const cookies = parseCookies(req.headers.cookie || "");
-  let sessionId = req.session.acopes_session_id || cookies.edel_beta_sid || req.sessionID;
-  const sessions = await readJsonFile(sessionsPath);
-  let session = sessions.find((item) => item.id === sessionId);
-  if (!session) {
-    sessionId = req.sessionID || crypto.randomUUID();
-    session = {
-      id: sessionId,
-      created_at: new Date().toISOString(),
-      optimizations_used: 0,
-      onboarding_completed: false,
-      store_name: "",
-      email: "",
-      user_id: ""
-    };
-    sessions.push(session);
-    await writeJsonFile(sessionsPath, sessions);
-    res.setHeader("Set-Cookie", `edel_beta_sid=${encodeURIComponent(sessionId)}; Path=/; SameSite=Lax`);
-  }
-  applySessionRecord(req.session, session);
-  req.session.acopes_session_id = sessionId;
+  req.session ||= {};
+  req.session.acopes_session_id ||= crypto.randomUUID();
+  req.session.created_at ||= new Date().toISOString();
+  req.session.optimizations_used ||= 0;
+  req.session.onboarding_completed ||= false;
+  req.session.store_name ||= "";
+  req.session.email ||= "";
+  req.session.user_id ||= "";
   next();
 });
 
@@ -271,16 +231,6 @@ function sessionEmail(req) {
 function belongsToSessionEmail(item = {}, req) {
   const email = sessionEmail(req);
   return Boolean(email && normalizeEmail(item.email) === email);
-}
-
-function saveExpressSession(req) {
-  return new Promise((resolve) => {
-    if (!req?.session?.save) {
-      resolve();
-      return;
-    }
-    req.session.save(() => resolve());
-  });
 }
 
 async function ensureLogsFile() {
@@ -380,15 +330,6 @@ async function readRuntimeJsonFast(runtimePath, seedPath, fallback = []) {
   return withTimeout(readRuntimeJson(runtimePath, seedPath, fallback), 3000, fallback);
 }
 
-async function updateSession(sessionId, patch) {
-  const sessions = await readJsonFile(sessionsPath);
-  const session = sessions.find((item) => item.id === sessionId);
-  if (!session) return null;
-  Object.assign(session, patch);
-  await writeJsonFile(sessionsPath, sessions);
-  return session;
-}
-
 function normalizeEmail(email = "") {
   return String(email).trim().toLowerCase();
 }
@@ -454,20 +395,14 @@ async function updateUser(userId, patch) {
 }
 
 async function saveUserEtsyAuth(session, tokens = {}) {
-  const email = normalizeEmail(session.email || `session-${sessionRecordId(session)}@local.acopes`);
+  const email = normalizeEmail(session.email || `session-${session.acopes_session_id || crypto.randomUUID()}@local.acopes`);
   const user = await getOrCreateUser(email);
   const updated = await updateUser(user.id, { etsy_auth: publicEtsyAuth(tokens) });
-  const updatedSession = await updateSession(sessionRecordId(session), {
-    user_id: user.id,
-    email,
-    onboarding_completed: session.onboarding_completed,
-    store_name: session.store_name || ""
-  });
-  if (updatedSession) Object.assign(session, updatedSession);
   session.email = updated.email;
   session.user_id = updated.id;
+  session.onboarding_completed = session.onboarding_completed;
+  session.store_name = session.store_name || "";
   session.etsy_auth = updated.etsy_auth;
-  if (typeof session.save === "function") await new Promise((resolve) => session.save(() => resolve()));
   etsyDebug("Persisted Etsy auth for user", {
     email,
     user_id: publicEtsyAuth(tokens).user_id || "",
@@ -1972,12 +1907,9 @@ async function discoverEtsyShop(tokens, context = {}) {
   });
   await writeEtsyTokens(updated);
   if (context.req?.session) {
-    const updatedSession = await updateSession(sessionRecordId(context.req.session), {
-      etsy_shop_id: updated.shop_id,
-      etsy_shop_name: updated.shop_name,
-      etsy_shop_url: updated.shop_url
-    });
-    if (updatedSession) applySessionRecord(context.req.session, updatedSession);
+    context.req.session.etsy_shop_id = updated.shop_id;
+    context.req.session.etsy_shop_name = updated.shop_name;
+    context.req.session.etsy_shop_url = updated.shop_url;
     await saveUserEtsyAuth(context.req.session, updated);
   }
   if (context.res) setEtsyAuthCookie(context.res, updated);
@@ -2173,15 +2105,9 @@ async function startEtsyOAuth(req, res) {
   }
   const { verifier, challenge } = createPkcePair();
   const state = crypto.randomUUID();
-  await updateSession(sessionRecordId(req.session), {
-    etsy_oauth_state: state,
-    etsy_code_verifier: verifier,
-    etsy_oauth_started_at: new Date().toISOString()
-  });
   req.session.etsy_oauth_state = state;
   req.session.etsy_code_verifier = verifier;
   req.session.etsy_oauth_started_at = new Date().toISOString();
-  await saveExpressSession(req);
   setOauthCookie(res, "acopes_etsy_oauth_state", state);
   setOauthCookie(res, "acopes_etsy_code_verifier", verifier);
   etsyDebug("Starting Etsy OAuth request", { scopes: ETSY_SCOPES, redirect_uri: ETSY_REDIRECT_URI });
@@ -2234,15 +2160,9 @@ async function finishEtsyOAuth(req, res) {
       scope: payload.scope || ETSY_SCOPES,
       expires_in: payload.expires_in || 3600
     });
-    await updateSession(sessionRecordId(req.session), {
-      etsy_oauth_state: "",
-      etsy_code_verifier: "",
-      etsy_connected_at: new Date().toISOString()
-    });
     req.session.etsy_oauth_state = "";
     req.session.etsy_code_verifier = "";
     req.session.etsy_connected_at = new Date().toISOString();
-    await saveExpressSession(req);
     let resolvedTokens = tokens;
     try {
       resolvedTokens = await discoverEtsyShop(tokens, { req, res });
@@ -2358,22 +2278,12 @@ app.post("/api/onboarding", async (req, res) => {
   }
 
   const user = await getOrCreateUser(email);
-  const session = await updateSession(sessionRecordId(req.session), {
-    onboarding_completed: true,
-    store_name: req.body.store_name || "",
-    email,
-    user_id: user.id
-  });
-  applySessionRecord(req.session, session || {});
-  Object.assign(req.session, {
-    onboarding_completed: true,
-    store_name: req.body.store_name || "",
-    email,
-    user_id: user.id,
-    etsy_auth: user.etsy_auth || req.session.etsy_auth || null
-  });
-  await saveExpressSession(req);
-  res.json(successResponse(sessionSummary(session, user, { dev_mode: isDevelopmentBypass(req) }), "Onboarding completed"));
+  req.session.onboarding_completed = true;
+  req.session.store_name = req.body.store_name || "";
+  req.session.email = email;
+  req.session.user_id = user.id;
+  req.session.etsy_auth = user.etsy_auth || req.session.etsy_auth || null;
+  res.json(successResponse(sessionSummary(req.session, user, { dev_mode: isDevelopmentBypass(req) }), "Onboarding completed"));
 });
 
 app.get("/api/analytics", async (_req, res) => {
@@ -2747,11 +2657,10 @@ app.post("/api/paddle-webhook-test", async (req, res) => {
 
   let session = req.session;
   if (normalizeEmail(req.session.email) === email || !req.session.email) {
-    session = await updateSession(sessionRecordId(req.session), {
-      email,
-      user_id: updatedUser.id,
-      onboarding_completed: true
-    });
+    req.session.email = email;
+    req.session.user_id = updatedUser.id;
+    req.session.onboarding_completed = true;
+    session = req.session;
   }
 
   res.json(successResponse({
