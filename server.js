@@ -2051,6 +2051,10 @@ function etsyErrorMessage(payload = {}, fallback = "Etsy listing update failed."
   return fallback;
 }
 
+function maskedTokenPrefix(token = "") {
+  return token ? `${String(token).slice(0, 6)}***` : "";
+}
+
 async function updateEtsyListingDirect(req, res, product = {}) {
   const rawListingId = product.listing_id || product.id || "";
   const listingId = normalizeListingId(rawListingId);
@@ -2103,6 +2107,15 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   }
 
   const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
+  console.log("[ETSY PUT REQUEST]", {
+    shop_id: shopId,
+    listing_id: listingId,
+    url: endpoint,
+    method: "PUT",
+    token_scopes: tokens.scope || ETSY_SCOPES,
+    has_access_token: Boolean(tokens.access_token),
+    access_token_prefix: maskedTokenPrefix(tokens.access_token)
+  });
   const response = await fetch(endpoint, {
     method: "PUT",
     headers: {
@@ -2119,11 +2132,29 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   } catch {
     payload = responseText;
   }
+  const errorMessage = etsyErrorMessage(payload, response.ok ? "" : `Etsy listing update failed with ${response.status}.`);
+  console.log("[ETSY PUT RESPONSE]", {
+    shop_id: shopId,
+    listing_id: listingId,
+    url: endpoint,
+    method: "PUT",
+    token_scopes: tokens.scope || ETSY_SCOPES,
+    has_access_token: Boolean(tokens.access_token),
+    access_token_prefix: maskedTokenPrefix(tokens.access_token),
+    etsy_response_status: response.status,
+    etsy_response_body: payload,
+    etsy_error_message: response.ok ? "" : errorMessage
+  });
   if (!response.ok) {
     console.error("[ETSY PUT FAILED]", {
       url: endpoint,
+      method: "PUT",
       status: response.status,
       body: payload,
+      etsy_error_message: errorMessage,
+      token_scopes: tokens.scope || ETSY_SCOPES,
+      has_access_token: Boolean(tokens.access_token),
+      access_token_prefix: maskedTokenPrefix(tokens.access_token),
       shop_id: shopId,
       listing_id: listingId,
       session_shop_id: sessionShopId,
@@ -2132,7 +2163,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
       token_shop_id: tokens.shop_id || "",
       request_listing_id: rawListingId
     });
-    const error = new Error(`${etsyErrorMessage(payload, `Etsy listing update failed with ${response.status}.`)} Please reconnect your Etsy shop to grant write permissions.`);
+    const error = new Error(`${errorMessage} Please reconnect your Etsy shop to grant write permissions.`);
     error.code = "etsy_update_failed";
     error.status = response.status;
     error.payload = payload;
