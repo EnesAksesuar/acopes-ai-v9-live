@@ -110,7 +110,17 @@ app.use(cookieSession({
   sameSite: "none",
   httpOnly: true
 }));
+app.post("/api/test-make-response", handleTestMakeResponse);
+app.get("/api/routes-debug", (_req, res) => {
+  res.status(200).json({
+    testMakeResponseMounted: true,
+    staticMounted: true
+  });
+});
+console.log("ROUTE REGISTERED POST /api/test-make-response");
+console.log("Server route order initialized");
 app.use(express.static(path.join(__dirname, "public")));
+console.log("STATIC MOUNTED");
 
 function parseCookies(header = "") {
   return Object.fromEntries(
@@ -249,7 +259,6 @@ function requireUser(req, res, next) {
 }
 
 app.post("/api/send-batch", requireUser, handleSendBatch);
-
 function sessionEmail(req) {
   return normalizeEmail(req.session?.email || req.user?.email || "");
 }
@@ -2277,6 +2286,31 @@ function sessionSummary(session, user = null, options = {}) {
   };
 }
 
+function handleTestMakeResponse(req, res) {
+  try {
+    const payload = {
+      ok: true,
+      message: "Test Make Response OK",
+      source: "server",
+      method: req.method,
+      timestamp: Date.now()
+    };
+    console.log("test-make-response POST hit");
+    console.log("test-make-response response payload", payload);
+    res.status(200).json(payload);
+  } catch (error) {
+    console.error("test-make-response caught error", error?.stack || error);
+    res.status(500).json({
+      ok: false,
+      message: "Test Make Response failed",
+      error: error instanceof Error ? error.message : String(error),
+      source: "server",
+      method: req.method,
+      timestamp: Date.now()
+    });
+  }
+}
+
 app.get("/api/logs", requireUser, async (req, res) => {
   res.json(successResponse((await readLogs()).filter((log) => belongsToSessionEmail(log, req)), "Logs loaded"));
 });
@@ -2895,52 +2929,6 @@ app.post("/api/make-response", async (req, res) => {
     auto_publish: false,
     publish_mode: "draft_only"
   }, created ? "Make response accepted and listing created" : "Make response accepted and listing updated"));
-});
-
-app.post("/api/test-make-response", async (_req, res) => {
-  if (process.env.NODE_ENV === "production") {
-    res.status(404).json(errorResponse("disabled_in_production", "Disabled in production."));
-    return;
-  }
-  const listings = await readListingsCache();
-  const listing = listings.find((item) => item.listing_id === "4362680734") || listings.find((item) => item.details_status === "synced");
-  if (!listing) {
-    res.status(404).json(errorResponse("no_synced_listing", "No synced listing available for test"));
-    return;
-  }
-  const record = await createOptimizationRecord({
-    listing,
-    optimized: {
-      listing_id: listing.listing_id,
-      seo_title: "Gold Box Chain Necklace, Minimal Layering Jewelry",
-      description: "Gold Box Chain Necklace designed for quiet luxury styling, polished everyday wear, and meaningful gifting. Its refined gold finish layers easily with pearl necklaces, heart pendants, and delicate chains for a timeless minimalist look. Gift terms such as birthday gift, bridesmaid jewelry, and gift for her belong in the tags so the title stays clean and mobile-friendly.",
-      tags: [
-        "gold box chain",
-        "layering necklace",
-        "minimal jewelry",
-        "quiet luxury gift",
-        "gift for her",
-        "birthday gift",
-        "bridesmaid jewelry",
-        "everyday necklace",
-        "gold necklace",
-        "dainty jewelry",
-        "elegant jewelry",
-        "timeless necklace",
-        "old money jewelry"
-      ],
-      alt_text: "Gold box chain necklace on a soft ivory background with minimal styling.",
-      thumbnail_preview_url: listing.image_url,
-      seo_score: 90,
-      ctr_score: 95,
-      thumbnail_score: 92,
-      tag_score: 90,
-      alt_text_score: 95,
-      status: "completed"
-    },
-    source: "local_test"
-  });
-  res.json(successResponse(record, "Test Make response generated"));
 });
 
 app.post("/api/paddle-webhook-test", async (req, res) => {

@@ -1429,13 +1429,14 @@ function renderScoreDashboard(records) {
 }
 
 function renderBatchDashboard() {
-  const total = queueRecords.length;
+  const total = products.length;
   const queued = queueRecords.filter((item) => item.status === "queued").length;
   const processing = queueRecords.filter((item) => item.status === "processing").length;
   const optimized = queueRecords.filter((item) => item.status === "optimized" || item.status === "completed").length;
   const failed = queueRecords.filter((item) => item.status === "failed").length;
-  const completed = total - queued - failed;
-  const progress = total ? Math.round((completed / total) * 100) : 0;
+  const queueTotal = queueRecords.length;
+  const completed = queueTotal - queued - failed;
+  const progress = queueTotal ? Math.round((completed / queueTotal) * 100) : 0;
   batchDashboardEl.innerHTML = `
     <div class="batch-row"><span>Total listings</span><strong>${total}</strong></div>
     <div class="queue-badges">
@@ -1544,6 +1545,7 @@ async function refreshListings() {
     debugLog("listing fetch started");
     const response = await fetch("/api/listings");
     const result = await parseJsonResponse(response);
+    console.log("Listings loaded", result);
     debugLog("listing api response received", result);
     if (!response.ok || result?.success === false) {
       setStatus("Failed");
@@ -1578,6 +1580,9 @@ async function refreshListings() {
     pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
+    renderBatchDashboard();
+    renderTopKpis(optimizationRecords);
+    renderTimeline();
     setStatus("Completed");
     debugLog("listings loaded", { count: products.length });
     if (payload.listings && !payload.listings.length) showToast("No Etsy listings found yet.", "error");
@@ -1589,6 +1594,8 @@ async function refreshListings() {
     etsySellerAccountRequired = false;
     renderProducts();
     renderCommerceIntelligence();
+    renderBatchDashboard();
+    renderTopKpis(optimizationRecords);
     showToast("API unavailable. Etsy listings were not loaded.", "error");
   }
 }
@@ -1805,10 +1812,15 @@ disconnectEtsyBtn?.addEventListener("click", async () => {
 
 testMakeResponseBtn?.addEventListener("click", async () => {
   setStatus("Processing");
-  const response = await fetch("/api/test-make-response", { method: "POST" });
-  setStatus(response.ok ? "Completed" : "Failed");
-  showToast(response.ok ? "Test Make response loaded with High confidence demo data." : "Test Make response failed.", response.ok ? "success" : "error");
-  await refreshOptimizations();
+  const testEndpoint = "/api/test-make-response";
+  console.log("Calling test endpoint", testEndpoint);
+  const response = await fetch(testEndpoint, { method: "POST" });
+  const data = await parseJsonResponse(response);
+  console.log("Response status", response.status);
+  console.log("Response body", data);
+  const success = response.ok && data.ok;
+  setStatus(success ? "Completed" : "Failed");
+  showToast(success ? "Make response endpoint is active." : data.message || "Test Make response failed.", success ? "success" : "error");
 });
 
 logsEl?.addEventListener("click", async (event) => {
