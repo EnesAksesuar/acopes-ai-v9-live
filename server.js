@@ -248,6 +248,8 @@ function requireUser(req, res, next) {
   res.status(401).json({ success: false, error: "login_required", message: "Login required." });
 }
 
+app.post("/api/send-batch", requireUser, handleSendBatch);
+
 function sessionEmail(req) {
   return normalizeEmail(req.session?.email || req.user?.email || "");
 }
@@ -2041,7 +2043,8 @@ function etsyErrorMessage(payload = {}, fallback = "Etsy listing update failed."
 }
 
 async function updateEtsyListingDirect(req, res, product = {}) {
-  const listingId = normalizeListingId(product.listing_id || product.id);
+  const rawListingId = product.listing_id || product.id || "";
+  const listingId = normalizeListingId(rawListingId);
   if (!listingId) {
     const error = new Error("Missing Etsy listing_id.");
     error.code = "missing_listing_id";
@@ -2057,13 +2060,24 @@ async function updateEtsyListingDirect(req, res, product = {}) {
 
   let tokens = await resolveRequestEtsyAuth(req);
   tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
+  const sessionShopId = req.session?.etsy_shop_id || "";
+  const sessionAuthShopId = req.session?.etsy_auth?.shop_id || "";
+  const requestAuthShopId = req.etsyAuth?.shop_id || "";
+  console.log("[ETSY PUT AUTH IDS]", {
+    session_shop_id: sessionShopId,
+    session_etsy_auth_shop_id: sessionAuthShopId,
+    request_etsy_auth_shop_id: requestAuthShopId,
+    token_shop_id: tokens.shop_id || "",
+    request_listing_id: rawListingId,
+    normalized_listing_id: listingId
+  });
   if (!tokens.access_token || !tokens.shop_id) {
     const error = new Error("Please connect your Etsy shop before sending listings.");
     error.code = "etsy_not_connected";
     error.status = 401;
     throw error;
   }
-  const shopId = normalizeListingId(tokens.shop_id);
+  const shopId = normalizeListingId(sessionAuthShopId);
   if (!/^\d+$/.test(shopId)) {
     const error = new Error("Invalid Etsy shop_id. Please reconnect your Etsy shop to grant write permissions.");
     error.code = "invalid_shop_id";
@@ -2102,7 +2116,12 @@ async function updateEtsyListingDirect(req, res, product = {}) {
       status: response.status,
       body: payload,
       shop_id: shopId,
-      listing_id: listingId
+      listing_id: listingId,
+      session_shop_id: sessionShopId,
+      session_etsy_auth_shop_id: sessionAuthShopId,
+      request_etsy_auth_shop_id: requestAuthShopId,
+      token_shop_id: tokens.shop_id || "",
+      request_listing_id: rawListingId
     });
     const error = new Error(`${etsyErrorMessage(payload, `Etsy listing update failed with ${response.status}.`)} Please reconnect your Etsy shop to grant write permissions.`);
     error.code = "etsy_update_failed";
@@ -2710,7 +2729,7 @@ app.post("/api/send", requireUser, async (req, res) => {
   res.status(200).json(responseBody);
 });
 
-app.post("/api/send-batch", requireUser, async (req, res) => {
+async function handleSendBatch(req, res) {
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
@@ -2749,7 +2768,7 @@ app.post("/api/send-batch", requireUser, async (req, res) => {
     results,
     session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
   }, directEtsyMode ? "Batch sent to Etsy" : "Batch processed"));
-});
+}
 
 app.post("/api/retry/:id", requireUser, async (req, res) => {
   const user = await getSessionUser(req.session);
