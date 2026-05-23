@@ -2178,7 +2178,31 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+  const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+  const verifyEndpoint = `${ETSY_API_BASE}${listingPath}`;
+  console.log("[ETSY VERIFY LISTING GET]", {
+    url: verifyEndpoint,
+    shop_id: shopId,
+    listing_id: liveListingId
+  });
+  const verifyResponse = await fetch(verifyEndpoint, {
+    method: "GET",
+    headers: etsyApiHeaders(tokens.access_token)
+  });
+  const verifyText = await verifyResponse.text();
+  let verifyPayload = {};
+  try {
+    verifyPayload = verifyText ? JSON.parse(verifyText) : {};
+  } catch {
+    verifyPayload = verifyText;
+  }
+  console.log("[ETSY VERIFY LISTING RESPONSE]", {
+    status: verifyResponse.status,
+    body: verifyPayload
+  });
+
+  let endpoint = `${ETSY_API_BASE}${listingPath}`;
+  console.log("[ETSY PUT BASE USED]", ETSY_API_BASE);
   console.log("[ETSY PUT URL]", endpoint);
   console.log("[ETSY SHOP ID]", shopId);
   console.log("[ETSY LISTING ID]", liveListingId);
@@ -2192,21 +2216,39 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     has_access_token: Boolean(tokens.access_token),
     access_token_prefix: maskedTokenPrefix(tokens.access_token)
   });
-  const response = await fetch(endpoint, {
+  const putHeaders = {
+    "Content-Type": "application/json",
+    "x-api-key": process.env.ETSY_CLIENT_ID || "",
+    "Authorization": `Bearer ${tokens.access_token}`
+  };
+  let response = await fetch(endpoint, {
     method: "PUT",
-    headers: {
-      "Content-Type": "application/json",
-      "x-api-key": process.env.ETSY_CLIENT_ID || "",
-      "Authorization": `Bearer ${tokens.access_token}`
-    },
+    headers: putHeaders,
     body: JSON.stringify(updatePayload)
   });
-  const responseText = await response.text();
+  let responseText = await response.text();
   let payload = {};
   try {
     payload = responseText ? JSON.parse(responseText) : {};
   } catch {
     payload = responseText;
+  }
+  if (!response.ok && response.status === 404) {
+    const fallbackEndpoint = `${ETSY_API_FALLBACK_BASE}${listingPath}`;
+    console.log("[ETSY PUT BASE USED]", ETSY_API_FALLBACK_BASE);
+    console.log("[ETSY PUT URL]", fallbackEndpoint);
+    response = await fetch(fallbackEndpoint, {
+      method: "PUT",
+      headers: putHeaders,
+      body: JSON.stringify(updatePayload)
+    });
+    endpoint = fallbackEndpoint;
+    responseText = await response.text();
+    try {
+      payload = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      payload = responseText;
+    }
   }
   const errorMessage = etsyErrorMessage(payload, response.ok ? "" : `Etsy listing update failed with ${response.status}.`);
   console.log("[ETSY RESPONSE STATUS]", response.status);
