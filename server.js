@@ -1452,7 +1452,8 @@ async function createOptimizationRecord({ listing, optimized, source = "make_res
   const listingId = normalizeListingId(listing.listing_id || listing.id);
   const record = {
     id: crypto.randomUUID(),
-    listing_id: listingId,
+    listing_id: liveListingId,
+    original_listing_id: listingId,
     email: normalizeEmail(listing.email || optimized.email),
     listing_name: listing.name,
     created_at: new Date().toISOString(),
@@ -2055,6 +2056,53 @@ function maskedTokenPrefix(token = "") {
   return token ? `${String(token).slice(0, 6)}***` : "";
 }
 
+function normalizeTitleForMatch(value = "") {
+  return String(value || "")
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim()
+    .replace(/\s+/g, " ");
+}
+
+async function resolveLiveListingForEtsyPut(product = {}, shopId = "") {
+  const listings = (await readListingsCache()).filter((listing) => String(listing.sync_source || "") === "etsy_api");
+  const liveIds = listings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean);
+  const requestedId = normalizeListingId(product.listing_id || product.id);
+  console.log("[LIVE LISTING IDS]", {
+    shop_id: shopId,
+    count: liveIds.length,
+    first_5_listing_ids: liveIds.slice(0, 5)
+  });
+  console.log("[QUEUE ITEM ID]", {
+    listing_id: requestedId,
+    title: product.title || product.name || ""
+  });
+  if (requestedId && liveIds.includes(requestedId)) {
+    return { listing_id: requestedId, matched: "id" };
+  }
+  const productTitle = normalizeTitleForMatch(product.title || product.name || product.current_title || "");
+  const matched = productTitle
+    ? listings.find((listing) => normalizeTitleForMatch(listing.title || listing.name) === productTitle)
+      || listings.find((listing) => {
+        const liveTitle = normalizeTitleForMatch(listing.title || listing.name);
+        return liveTitle && (liveTitle.includes(productTitle) || productTitle.includes(liveTitle));
+      })
+    : null;
+  if (matched?.listing_id) {
+    return {
+      listing_id: normalizeListingId(matched.listing_id),
+      matched: "title",
+      stale_listing_id: requestedId
+    };
+  }
+  const error = new Error("Listing ID is stale. Refresh Etsy Listings and regenerate optimization.");
+  error.code = "stale_listing_id";
+  error.status = 409;
+  error.live_listing_count = liveIds.length;
+  error.requested_listing_id = requestedId;
+  throw error;
+}
+
 async function updateEtsyListingDirect(req, res, product = {}) {
   const rawListingId = product.listing_id || product.id || "";
   const listingId = normalizeListingId(rawListingId);
@@ -2097,6 +2145,15 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     error.status = 400;
     throw error;
   }
+  const liveListing = await resolveLiveListingForEtsyPut(product, shopId);
+  const liveListingId = liveListing.listing_id;
+  if (liveListing.matched === "title") {
+    console.log("[LIVE LISTING ID REMAPPED]", {
+      stale_listing_id: liveListing.stale_listing_id,
+      live_listing_id: liveListingId,
+      match: "title"
+    });
+  }
 
   const updatePayload = directEtsyUpdatePayload(product);
   if (!updatePayload.title || !updatePayload.description || !updatePayload.tags.length) {
@@ -2106,10 +2163,11 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
+  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
   console.log("[ETSY PUT REQUEST]", {
     shop_id: shopId,
-    listing_id: listingId,
+    listing_id: liveListingId,
+    original_listing_id: listingId,
     url: endpoint,
     method: "PUT",
     token_scopes: tokens.scope || ETSY_SCOPES,
@@ -2135,7 +2193,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   const errorMessage = etsyErrorMessage(payload, response.ok ? "" : `Etsy listing update failed with ${response.status}.`);
   console.log("[ETSY PUT RESPONSE]", {
     shop_id: shopId,
-    listing_id: listingId,
+    listing_id: liveListingId,
+    original_listing_id: listingId,
     url: endpoint,
     method: "PUT",
     token_scopes: tokens.scope || ETSY_SCOPES,
@@ -2156,7 +2215,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
       has_access_token: Boolean(tokens.access_token),
       access_token_prefix: maskedTokenPrefix(tokens.access_token),
       shop_id: shopId,
-      listing_id: listingId,
+      listing_id: liveListingId,
+      original_listing_id: listingId,
       session_shop_id: sessionShopId,
       session_etsy_auth_shop_id: sessionAuthShopId,
       request_etsy_auth_shop_id: requestAuthShopId,
@@ -2193,7 +2253,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     id: log.id,
     status: "sent",
     send_method: "etsy_api",
-    listing_id: listingId,
+    listing_id: liveListingId,
     completed_at: log.completed_at,
     etsy_response: log.etsy_response,
     sent_payload: updatePayload

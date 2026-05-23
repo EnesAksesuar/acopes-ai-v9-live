@@ -1751,6 +1751,7 @@ sendSelectedBtn?.addEventListener("click", async () => {
 });
 
 sendBatchBtn?.addEventListener("click", async () => {
+  rebuildSelectedListingIdsFromDom();
   const batch = requireSelectedProducts();
   if (!batch.length) return;
   await sendBatch(batch);
