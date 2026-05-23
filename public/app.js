@@ -717,6 +717,36 @@ async function refreshSession() {
   }
 }
 
+async function activateEtsyConnectToken() {
+  const params = new URLSearchParams(window.location.search);
+  const token = params.get("connect_token");
+  const email = params.get("email");
+  if (!token || !email) return false;
+  try {
+    const response = await fetch("/api/etsy/activate-token", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, email })
+    });
+    const result = await parseJsonResponse(response);
+    console.log("Etsy activate-token response", result);
+    if (!response.ok || result?.success === false) {
+      showToast(result.message || "Etsy session activation failed.", "error");
+      return false;
+    }
+    const cleanUrl = new URL(window.location.href);
+    cleanUrl.searchParams.delete("connect_token");
+    cleanUrl.searchParams.delete("email");
+    window.history.replaceState({}, "", cleanUrl.toString());
+    showToast("Etsy session activated. Loading listings...", "success");
+    return true;
+  } catch (error) {
+    debugLog("etsy activate token failed", error);
+    showToast("API unavailable. Etsy session activation failed.", "error");
+    return false;
+  }
+}
+
 function productSelectionId(product = {}, index = 0) {
   return String(product.listing_id || product.id || product.name || product.title || index);
 }
@@ -1904,7 +1934,7 @@ queueEl?.addEventListener("click", async (event) => {
   await refreshQueue();
 });
 
-refreshSession().then(async (session) => {
+activateEtsyConnectToken().then(async () => refreshSession()).then(async (session) => {
   if (session?.onboarding_completed && !session.email_required) onboardingPanelEl.hidden = true;
   const requestedUpgrade = new URLSearchParams(window.location.search).get("upgrade");
   const etsyState = new URLSearchParams(window.location.search).get("etsy");

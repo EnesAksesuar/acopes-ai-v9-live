@@ -411,6 +411,13 @@ async function updateUser(userId, patch) {
   return user;
 }
 
+async function updateUserByEmail(email, patch) {
+  const normalizedEmail = normalizeEmail(email);
+  if (!normalizedEmail) return null;
+  const user = await getOrCreateUser(normalizedEmail);
+  return updateUser(user.id, patch);
+}
+
 async function saveUserEtsyAuth(session, tokens = {}) {
   const email = normalizeEmail(session.email || `session-${session.acopes_session_id || crypto.randomUUID()}@local.acopes`);
   const user = await getOrCreateUser(email);
@@ -2187,6 +2194,15 @@ async function finishEtsyOAuth(req, res) {
       etsyDebug("Shop status resolution skipped", { error: error instanceof Error ? error.message : String(error) });
     }
     await persistRequestEtsyAuth(req, res, resolvedTokens);
+    const connectToken = crypto.randomUUID();
+    const callbackEmail = normalizeEmail(req.session?.email || "");
+    if (callbackEmail) {
+      await updateUserByEmail(callbackEmail, {
+        etsy_auth: publicEtsyAuth(resolvedTokens),
+        etsy_connect_token: connectToken,
+        etsy_connect_token_expires: Date.now() + 300000
+      });
+    }
     console.log("[CALLBACK] email saved to session:", req.session?.email ? "yes" : "no");
     console.log("[CALLBACK] etsy_auth saved to session:", req.session?.etsy_auth ? "yes" : "no");
     console.log("[CALLBACK] session keys:", Object.keys(req.session || {}));
@@ -2207,7 +2223,12 @@ async function finishEtsyOAuth(req, res) {
     } catch (error) {
       etsyDebug("Initial Etsy listing sync skipped", { error: error instanceof Error ? error.message : String(error) });
     }
-    res.redirect("/app.html?etsy=connected");
+    const redirectParams = new URLSearchParams({ etsy: "connected" });
+    if (callbackEmail) {
+      redirectParams.set("connect_token", connectToken);
+      redirectParams.set("email", callbackEmail);
+    }
+    res.redirect(`/app.html?${redirectParams.toString()}`);
   } catch (error) {
     clearOauthCookies(res);
     res.redirect(`/app.html?etsy=error&message=${encodeURIComponent(error instanceof Error ? error.message : String(error))}`);
@@ -2219,6 +2240,34 @@ app.get("/api/etsy/auth", startEtsyOAuth);
 app.get("/api/etsy/connect", startEtsyOAuth);
 app.get("/auth/etsy/callback", finishEtsyOAuth);
 app.get("/api/etsy/callback", finishEtsyOAuth);
+
+app.post("/api/etsy/activate-token", async (req, res) => {
+  const email = normalizeEmail(req.body.email);
+  const token = String(req.body.token || "").trim();
+  if (!email || !token) {
+    res.status(400).json(errorResponse("invalid_connect_token", "Missing Etsy connect token or email."));
+    return;
+  }
+  const users = await readUsers();
+  const user = users.find((item) => normalizeEmail(item.email) === email);
+  const tokenMatches = user?.etsy_connect_token && user.etsy_connect_token === token;
+  const tokenActive = Number(user?.etsy_connect_token_expires || 0) > Date.now();
+  if (!user || !tokenMatches || !tokenActive || !user.etsy_auth) {
+    res.status(401).json(errorResponse("invalid_connect_token", "Etsy connect token is invalid or expired."));
+    return;
+  }
+  user.etsy_connect_token = "";
+  user.etsy_connect_token_expires = 0;
+  user.updated_at = new Date().toISOString();
+  await writeUsers(users);
+  req.session.email = email;
+  req.session.user_id = user.id;
+  req.session.onboarding_completed = true;
+  req.session.etsy_auth = user.etsy_auth;
+  req.user = user;
+  req.etsyAuth = user.etsy_auth;
+  res.json(successResponse({ status: "activated", etsy: await etsyTokenStatus(user.etsy_auth) }, "Etsy session activated"));
+});
 
 app.post("/api/etsy/disconnect", requireUser, async (req, res) => {
   clearEtsyAuthCookie(res);
