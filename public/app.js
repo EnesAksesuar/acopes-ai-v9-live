@@ -1939,14 +1939,19 @@ etsyConnectBannerEl?.addEventListener("click", (event) => {
 });
 
 queueBatchBtn?.addEventListener("click", async () => {
+  rebuildSelectedListingIdsFromDom();
+  console.log("[QUEUE SELECTED IDS]", [...selectedListingIds]);
   const batch = requireSelectedProducts();
   if (!batch.length) return;
-  await fetch("/api/queue", {
+  const response = await fetch("/api/queue", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ listings: batch })
   });
+  await parseJsonResponse(response);
+  showToast("Selected listing added to queue.", "success");
   await refreshQueue();
+  renderProducts();
 });
 
 competitorFormEl?.addEventListener("submit", (event) => {
