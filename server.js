@@ -48,7 +48,8 @@ const listingsMetaPath = path.join(runtimeDataDir, "listings-meta.json");
 const ETSY_CLIENT_ID = (process.env.ETSY_CLIENT_ID || "").trim();
 const ETSY_CLIENT_SECRET = (process.env.ETSY_CLIENT_SECRET || "").trim();
 const ETSY_REDIRECT_URI = (process.env.ETSY_REDIRECT_URI || `http://localhost:${PORT}/api/etsy/callback`).trim();
-const ETSY_SCOPES = (process.env.ETSY_SCOPES || "listings_r listings_w shops_r").trim();
+const REQUIRED_ETSY_SCOPES = ["listings_r", "listings_w", "shops_r"];
+const ETSY_SCOPES = [...new Set(`${process.env.ETSY_SCOPES || ""} ${REQUIRED_ETSY_SCOPES.join(" ")}`.trim().split(/\s+/).filter(Boolean))].join(" ");
 const ETSY_AUTH_URL = "https://www.etsy.com/oauth/connect";
 const ETSY_TOKEN_URL = "https://api.etsy.com/v3/public/oauth/token";
 const ETSY_API_BASE = "https://api.etsy.com/v3/application";
@@ -2047,6 +2048,12 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     error.status = 400;
     throw error;
   }
+  if (!/^\d+$/.test(listingId)) {
+    const error = new Error("Invalid Etsy listing_id. Expected a numeric listing id.");
+    error.code = "invalid_listing_id";
+    error.status = 400;
+    throw error;
+  }
 
   let tokens = await resolveRequestEtsyAuth(req);
   tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
@@ -2054,6 +2061,13 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     const error = new Error("Please connect your Etsy shop before sending listings.");
     error.code = "etsy_not_connected";
     error.status = 401;
+    throw error;
+  }
+  const shopId = normalizeListingId(tokens.shop_id);
+  if (!/^\d+$/.test(shopId)) {
+    const error = new Error("Invalid Etsy shop_id. Please reconnect your Etsy shop to grant write permissions.");
+    error.code = "invalid_shop_id";
+    error.status = 400;
     throw error;
   }
 
@@ -2065,7 +2079,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(tokens.shop_id)}/listings/${encodeURIComponent(listingId)}`;
+  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
   const response = await fetch(endpoint, {
     method: "PUT",
     headers: {
@@ -2083,7 +2097,14 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     payload = responseText;
   }
   if (!response.ok) {
-    const error = new Error(etsyErrorMessage(payload, `Etsy listing update failed with ${response.status}.`));
+    console.error("[ETSY PUT FAILED]", {
+      url: endpoint,
+      status: response.status,
+      body: payload,
+      shop_id: shopId,
+      listing_id: listingId
+    });
+    const error = new Error(`${etsyErrorMessage(payload, `Etsy listing update failed with ${response.status}.`)} Please reconnect your Etsy shop to grant write permissions.`);
     error.code = "etsy_update_failed";
     error.status = response.status;
     error.payload = payload;
