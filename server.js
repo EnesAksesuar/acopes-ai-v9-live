@@ -28,6 +28,7 @@ const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
 const MAKE_RESPONSE_SECRET = (process.env.MAKE_RESPONSE_SECRET || "").trim();
 const SESSION_SECRET = process.env.SESSION_SECRET || "acopes2026secret";
+const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const logsPath = path.join(runtimeDataDir, "automation-logs.json");
 const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
 const listingsSeedPath = path.join(seedDataDir, "listings.json");
@@ -253,6 +254,18 @@ function sessionEmail(req) {
 function belongsToSessionEmail(item = {}, req) {
   const email = sessionEmail(req);
   return Boolean(email && normalizeEmail(item.email) === email);
+}
+
+function requireAdmin(req, res, next) {
+  if (!ADMIN_SECRET) {
+    res.status(503).json(errorResponse("admin_not_configured", "ADMIN_SECRET is not configured."));
+    return;
+  }
+  if (String(req.get("x-admin-secret") || "") !== ADMIN_SECRET) {
+    res.status(401).json(errorResponse("admin_unauthorized", "Invalid admin secret."));
+    return;
+  }
+  next();
 }
 
 function createAuthToken(user = {}, etsyAuth = null) {
@@ -2414,6 +2427,41 @@ app.post("/api/waitlist", async (req, res) => {
   await writeJsonFile(waitlistPath, waitlist);
   await incrementAnalytics("waitlist_signup");
   res.json(successResponse({ status: "joined" }, "Joined waitlist"));
+});
+
+app.get("/api/admin/stats", requireAdmin, async (_req, res) => {
+  const users = await readUsers();
+  const optimizations = await readRuntimeJsonFast(optimizationsPath, optimizationsSeedPath, []);
+  const now = Date.now();
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const weekStart = new Date();
+  weekStart.setDate(weekStart.getDate() - 7);
+  const normalizedUsers = users.map((user) => {
+    const email = normalizeEmail(user.email);
+    const userOptimizations = optimizations.filter((record) => normalizeEmail(record.email) === email);
+    const creditsGranted = Number(user.credits_granted || PLAN_CREDITS[user.plan] || PLAN_CREDITS.free);
+    const creditsRemaining = Number(user.credits_remaining ?? creditsGranted);
+    return {
+      email,
+      shop_name: user.store_name || user.shop_name || user.etsy_auth?.shop_name || "",
+      shop_url: user.shop_url || user.etsy_auth?.shop_url || "",
+      credits_used: Math.max(0, creditsGranted - creditsRemaining),
+      optimizations_count: userOptimizations.length || Number(user.optimizations_used || 0),
+      last_active: user.updated_at || user.created_at || "",
+      etsy_connected: user.etsy_auth?.access_token || user.etsy_auth?.refresh_token ? "yes" : "no"
+    };
+  });
+  res.json(successResponse({
+    total_registered_users: users.length,
+    users: normalizedUsers,
+    optimizations: {
+      today: optimizations.filter((record) => new Date(record.created_at || 0).getTime() >= dayStart.getTime()).length,
+      this_week: optimizations.filter((record) => new Date(record.created_at || 0).getTime() >= weekStart.getTime()).length,
+      all_time: optimizations.length
+    },
+    generated_at: new Date(now).toISOString()
+  }, "Admin stats loaded"));
 });
 
 app.get("/api/optimizations", requireUser, async (req, res) => {
