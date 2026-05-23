@@ -2016,6 +2016,110 @@ async function syncEtsyListings(tokens = null, res = null, req = null) {
   return listings;
 }
 
+function directEtsyUpdatePayload(product = {}) {
+  const title = String(product.optimized_title || product.optimizedTitle || product.seo_title || product.title || "").trim();
+  const description = String(product.optimized_description || product.optimizedDescription || product.description || "").trim();
+  const tagsSource = Array.isArray(product.optimized_tags)
+    ? product.optimized_tags
+    : Array.isArray(product.optimizedTags)
+      ? product.optimizedTags
+      : Array.isArray(product.tags)
+        ? product.tags
+        : [];
+  const tags = tagsSource.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 13);
+  return { title, tags, description };
+}
+
+function etsyErrorMessage(payload = {}, fallback = "Etsy listing update failed.") {
+  if (typeof payload === "string" && payload.trim()) return payload.trim();
+  if (payload.error) return String(payload.error);
+  if (payload.message) return String(payload.message);
+  if (payload.error_description) return String(payload.error_description);
+  if (Array.isArray(payload.errors) && payload.errors.length) return payload.errors.map((item) => item.message || item.error || item).join("; ");
+  return fallback;
+}
+
+async function updateEtsyListingDirect(req, res, product = {}) {
+  const listingId = normalizeListingId(product.listing_id || product.id);
+  if (!listingId) {
+    const error = new Error("Missing Etsy listing_id.");
+    error.code = "missing_listing_id";
+    error.status = 400;
+    throw error;
+  }
+
+  let tokens = await resolveRequestEtsyAuth(req);
+  tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
+  if (!tokens.access_token || !tokens.shop_id) {
+    const error = new Error("Please connect your Etsy shop before sending listings.");
+    error.code = "etsy_not_connected";
+    error.status = 401;
+    throw error;
+  }
+
+  const updatePayload = directEtsyUpdatePayload(product);
+  if (!updatePayload.title || !updatePayload.description || !updatePayload.tags.length) {
+    const error = new Error("Optimized title, description, and tags are required before sending to Etsy.");
+    error.code = "missing_optimized_fields";
+    error.status = 400;
+    throw error;
+  }
+
+  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(tokens.shop_id)}/listings/${encodeURIComponent(listingId)}`;
+  const response = await fetch(endpoint, {
+    method: "PUT",
+    headers: {
+      "Content-Type": "application/json",
+      "x-api-key": process.env.ETSY_CLIENT_ID || "",
+      "Authorization": `Bearer ${tokens.access_token}`
+    },
+    body: JSON.stringify(updatePayload)
+  });
+  const responseText = await response.text();
+  let payload = {};
+  try {
+    payload = responseText ? JSON.parse(responseText) : {};
+  } catch {
+    payload = responseText;
+  }
+  if (!response.ok) {
+    const error = new Error(etsyErrorMessage(payload, `Etsy listing update failed with ${response.status}.`));
+    error.code = "etsy_update_failed";
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
+  }
+
+  const log = {
+    id: crypto.randomUUID(),
+    created_at: new Date().toISOString(),
+    completed_at: new Date().toISOString(),
+    status: "sent",
+    email: sessionEmail(req),
+    payload: buildPayload(product),
+    send_method: "etsy_api",
+    listing_id: listingId,
+    etsy_response: {
+      status: response.status,
+      ok: true,
+      body: payload
+    }
+  };
+  const logs = await readLogs();
+  logs.unshift(log);
+  await writeLogs(logs);
+
+  return {
+    id: log.id,
+    status: "sent",
+    send_method: "etsy_api",
+    listing_id: listingId,
+    completed_at: log.completed_at,
+    etsy_response: log.etsy_response,
+    sent_payload: updatePayload
+  };
+}
+
 async function sendToMake(product) {
   const payload = buildPayload(product);
   const startedAt = new Date().toISOString();
@@ -2597,26 +2701,33 @@ app.post("/api/send-batch", requireUser, async (req, res) => {
     res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
     return;
   }
-  if (!WEBHOOK_URL) {
-    res.status(503).json(errorResponse("make_webhook_not_configured", "Make webhook is not configured.", {
-      error: "make_webhook_not_configured",
-      message: "Make webhook is not configured.",
+  const results = [];
+  const directEtsyMode = !WEBHOOK_URL;
+  try {
+    for (const product of products) {
+      await incrementAnalytics("optimization_started");
+      const sendProduct = { ...product, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo" };
+      results.push(directEtsyMode ? await updateEtsyListingDirect(req, res, sendProduct) : await sendToMakeWithTaxonomyRetry(sendProduct));
+    }
+  } catch (error) {
+    const status = error?.status && Number(error.status) >= 400 ? Number(error.status) : 502;
+    res.status(status).json(errorResponse(error?.code || "etsy_update_failed", error instanceof Error ? error.message : String(error), {
+      status: "failed",
+      send_method: directEtsyMode ? "etsy_api" : "make",
+      results,
+      etsy_response: error?.payload || null,
       session: sessionSummary(req.session, user, { dev_mode: devMode })
     }));
     return;
   }
-  const results = [];
-  for (const product of products) {
-    await incrementAnalytics("optimization_started");
-    results.push(await sendToMakeWithTaxonomyRetry({ ...product, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo" }));
-  }
-  const completedCount = results.filter((item) => item.status === "completed").length;
+  const completedCount = results.filter((item) => item.status === "completed" || item.status === "sent").length;
   const updatedUser = !devMode && completedCount > 0 ? await consumeCredits(user, completedCount) : user;
   res.json(successResponse({
-    status: results.every((item) => item.status === "completed") ? "completed" : "partial",
+    status: results.every((item) => item.status === "completed" || item.status === "sent") ? (directEtsyMode ? "sent" : "completed") : "partial",
+    send_method: directEtsyMode ? "etsy_api" : "make",
     results,
     session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
-  }, "Batch processed"));
+  }, directEtsyMode ? "Batch sent to Etsy" : "Batch processed"));
 });
 
 app.post("/api/retry/:id", requireUser, async (req, res) => {

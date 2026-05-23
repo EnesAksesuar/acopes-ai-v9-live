@@ -1108,6 +1108,18 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
   renderScoreDashboard(optimizationRecords);
 }
 
+function markListingSent(listing = {}, result = {}) {
+  const listingId = String(result.listing_id || listing.listing_id || "");
+  if (!listingId) return;
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== listingId) return;
+    item.send_status = "sent";
+    item.sent_at = result.completed_at || new Date().toISOString();
+    item.last_send_method = result.send_method || "etsy_api";
+  });
+  renderProducts();
+}
+
 function handleAuthOrBillingError(response, result) {
   if (result.session) renderSession(result.session);
   if (response.status === 401) {
@@ -1188,6 +1200,7 @@ function renderProducts() {
           <div class="product-copy">
             <div class="product-topline">
               <strong>${escapeHtml(product.name)}</strong>
+              ${product.send_status === "sent" ? `<b class="completed-badge">Sent to Etsy</b>` : ""}
               <small>ID ${escapeHtml(product.listing_id)}${product.views ? ` · ${escapeHtml(product.views)} views` : ""}</small>
             </div>
             <div class="mini-compare">
@@ -1661,10 +1674,21 @@ async function sendBatch(productsToSend) {
   setStatus("Sending");
   sendBatchBtn.disabled = true;
   try {
+    const productsWithOptimizations = productsToSend.map((listing) => {
+      const listingId = String(listing.listing_id || "");
+      const record = optimizationRecords.find((item) => String(item.listing_id || "") === listingId && recordOutputValid(item));
+      if (!record?.after) return listing;
+      return {
+        ...listing,
+        optimized_title: optimizedTitleFrom(record.after, listing) || listing.optimized_title || listing.optimizedTitle,
+        optimized_description: optimizedDescriptionFrom(record.after) || listing.optimized_description || listing.optimizedDescription,
+        optimized_tags: optimizedTagsFrom(record.after).length ? optimizedTagsFrom(record.after) : listing.optimized_tags || listing.optimizedTags || listing.tags
+      };
+    });
     const response = await fetch("/api/send-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ products: productsToSend })
+      body: JSON.stringify({ products: productsWithOptimizations })
     });
     setStatus(response.ok ? "Queued" : "Failed");
     const result = await parseJsonResponse(response);
@@ -1681,8 +1705,13 @@ async function sendBatch(productsToSend) {
     }
     if (result.session) renderSession(result.session);
     const responseResults = Array.isArray(result.results) ? result.results : Array.isArray(result.data?.results) ? result.data.results : [];
-    productsToSend.forEach((listing, index) => applyOptimizationResponse(listing, responseResults[index] || {}));
-    showToast("Batch queued for AI optimization.", "success");
+    const sendMethod = result.send_method || result.data?.send_method || "";
+    productsToSend.forEach((listing, index) => {
+      const itemResult = responseResults[index] || {};
+      if (sendMethod === "etsy_api" || itemResult.status === "sent") markListingSent(listing, itemResult);
+      else applyOptimizationResponse(listing, itemResult);
+    });
+    showToast(sendMethod === "etsy_api" ? "Selected listings sent to Etsy." : "Batch queued for AI optimization.", "success");
     await refreshLogs();
     await refreshOptimizations();
   } catch (error) {
