@@ -2179,6 +2179,9 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   }
 
   const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+  console.log("[ETSY PUT URL]", endpoint);
+  console.log("[ETSY SHOP ID]", shopId);
+  console.log("[ETSY LISTING ID]", liveListingId);
   console.log("[ETSY PUT REQUEST]", {
     shop_id: shopId,
     listing_id: liveListingId,
@@ -2206,6 +2209,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     payload = responseText;
   }
   const errorMessage = etsyErrorMessage(payload, response.ok ? "" : `Etsy listing update failed with ${response.status}.`);
+  console.log("[ETSY RESPONSE STATUS]", response.status);
+  console.log("[ETSY RESPONSE BODY]", payload);
   console.log("[ETSY PUT RESPONSE]", {
     shop_id: shopId,
     listing_id: liveListingId,
@@ -2238,10 +2243,15 @@ async function updateEtsyListingDirect(req, res, product = {}) {
       token_shop_id: tokens.shop_id || "",
       request_listing_id: rawListingId
     });
-    const error = new Error(`${errorMessage} Please reconnect your Etsy shop to grant write permissions.`);
-    error.code = "etsy_update_failed";
+    const error = new Error(errorMessage);
+    error.code = response.status === 404 ? "etsy_resource_not_found" : "etsy_update_failed";
     error.status = response.status;
-    error.payload = payload;
+    error.payload = {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      etsy_status: response.status,
+      etsy_body: payload
+    };
     throw error;
   }
 
@@ -2949,6 +2959,11 @@ async function handleSendBatch(req, res) {
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
+  console.log("[SEND BATCH REQUEST]", {
+    count: products.length,
+    direct_etsy_mode: !WEBHOOK_URL,
+    listing_ids: products.map((product) => normalizeListingId(product.listing_id || product.id))
+  });
   if (!user) {
     res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
@@ -2961,19 +2976,28 @@ async function handleSendBatch(req, res) {
   const directEtsyMode = !WEBHOOK_URL;
   try {
     for (const product of products) {
+      console.log("[SEND BATCH ITEM]", {
+        listing_id: normalizeListingId(product.listing_id || product.id),
+        title: product.title || product.name || "",
+        has_optimized_title: Boolean(product.optimized_title || product.optimizedTitle)
+      });
       await incrementAnalytics("optimization_started");
       const sendProduct = { ...product, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo" };
       results.push(directEtsyMode ? await updateEtsyListingDirect(req, res, sendProduct) : await sendToMakeWithTaxonomyRetry(sendProduct));
     }
   } catch (error) {
     const status = error?.status && Number(error.status) >= 400 ? Number(error.status) : 502;
-    res.status(status).json(errorResponse(error?.code || "etsy_update_failed", error instanceof Error ? error.message : String(error), {
+    const errorData = {
       status: "failed",
       send_method: directEtsyMode ? "etsy_api" : "make",
       results,
       etsy_response: error?.payload || null,
       session: sessionSummary(req.session, user, { dev_mode: devMode })
-    }));
+    };
+    if (error?.code === "etsy_resource_not_found") {
+      Object.assign(errorData, error.payload || {});
+    }
+    res.status(status).json(errorResponse(error?.code || "etsy_update_failed", error instanceof Error ? error.message : String(error), errorData));
     return;
   }
   const completedCount = results.filter((item) => item.status === "completed" || item.status === "sent").length;
