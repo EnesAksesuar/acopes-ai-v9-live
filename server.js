@@ -2074,8 +2074,17 @@ async function discoverEtsyShop(tokens, context = {}) {
 async function syncEtsyListings(tokens = null, res = null, req = null) {
   tokens = await discoverEtsyShop(await ensureValidEtsyToken(tokens, res, req), { req, res });
   console.log("Fetching live Etsy listings", { shop_id: tokens.shop_id || "", shop_name: tokens.shop_name || "" });
-  const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?limit=100&includes=Images`, tokens, { req, res });
-  const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
+  const payload = await etsyApi(`/shops/${tokens.shop_id}/listings/active?includes=Images&limit=100`, tokens, { req, res });
+  const rawListings = extractEtsyResults(payload);
+  const firstListing = rawListings[0] || {};
+  console.log("[LISTING IMAGE DEBUG]", {
+    listing_id: firstListing.listing_id,
+    has_images: Boolean(firstListing.images || firstListing.Images),
+    images_length: (firstListing.images || firstListing.Images)?.length,
+    first_image: (firstListing.images || firstListing.Images)?.[0],
+    image_url_set: Boolean(firstListing.image_url)
+  });
+  const listings = rawListings.map((listing) => normalizeListing({
     ...listing,
     sync_source: "etsy_api",
     details_status: "synced"
@@ -2990,7 +2999,7 @@ app.get("/api/listings", requireUser, async (req, res) => {
           shop_url: req.session?.etsy_shop_url || validTokens.shop_url || ""
         }
       : await discoverEtsyShop(validTokens, { req, res });
-    const response = await fetch(`https://openapi.etsy.com/v3/application/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?limit=100&includes=Images`, {
+    const response = await fetch(`https://openapi.etsy.com/v3/application/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?includes=Images&limit=100`, {
       headers: etsyApiHeaders(tokens.access_token)
     });
     const payload = await response.json().catch(() => ({}));
@@ -3007,7 +3016,16 @@ app.get("/api/listings", requireUser, async (req, res) => {
       error.payload = payload;
       throw error;
     }
-    const listings = extractEtsyResults(payload).map((listing) => normalizeListing({
+    const rawListings = extractEtsyResults(payload);
+    const firstListing = rawListings[0] || {};
+    console.log("[LISTING IMAGE DEBUG]", {
+      listing_id: firstListing.listing_id,
+      has_images: Boolean(firstListing.images || firstListing.Images),
+      images_length: (firstListing.images || firstListing.Images)?.length,
+      first_image: (firstListing.images || firstListing.Images)?.[0],
+      image_url_set: Boolean(firstListing.image_url)
+    });
+    const listings = rawListings.map((listing) => normalizeListing({
       ...listing,
       sync_source: "etsy_api",
       details_status: "synced"
