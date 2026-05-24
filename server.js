@@ -1918,6 +1918,66 @@ function imageUrlFromImages(images = []) {
   return firstImage.url_570xN || firstImage.url_fullxfull || firstImage.url_340x270 || firstImage.url_170x135 || firstImage.url_75x75 || firstImage.url || "";
 }
 
+function sleep(ms = 100) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function fetchVisibleListingImageMap(listings = [], tokens = {}) {
+  const listingIds = listings.slice(0, 10).map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean);
+  if (!listingIds.length) return new Map();
+  const fetchImages = async () => {
+    const imageMap = new Map();
+    try {
+      const batchEndpoint = `${ETSY_API_FALLBACK_BASE}/listings/batch?listing_ids=${encodeURIComponent(listingIds.join(","))}&includes=Images`;
+      const batchResponse = await fetch(batchEndpoint, {
+        headers: etsyApiHeaders(tokens.access_token)
+      });
+      const batchPayload = await batchResponse.json().catch(() => ({}));
+      if (!batchResponse.ok) throw new Error(batchPayload.error || batchPayload.message || `Etsy image batch failed with ${batchResponse.status}`);
+      for (const listing of extractEtsyResults(batchPayload)) {
+        const listingId = normalizeListingId(listing.listing_id || listing.id);
+        const images = listing.images || listing.Images || [];
+        const imageUrl = listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
+        console.log("[IMAGE FETCH RESULT]", { listing_id: listingId, image_url: imageUrl });
+        if (listingId && imageUrl) imageMap.set(listingId, { images, image_url: imageUrl });
+      }
+      if (imageMap.size) return imageMap;
+      throw new Error("Etsy image batch returned no usable images.");
+    } catch (error) {
+      etsyDebug("Etsy batch image fetch failed", {
+        listing_count: listingIds.length,
+        message: error instanceof Error ? error.message : String(error)
+      });
+    }
+
+    for (const listingId of listingIds.slice(0, 5)) {
+      try {
+        await sleep(100);
+        const imageEndpoint = `${ETSY_API_FALLBACK_BASE}/listings/${encodeURIComponent(listingId)}/images`;
+        const imageResponse = await fetch(imageEndpoint, {
+          headers: etsyApiHeaders(tokens.access_token)
+        });
+        const imagePayload = await imageResponse.json().catch(() => ({}));
+        if (!imageResponse.ok) throw new Error(imagePayload.error || imagePayload.message || `Etsy image fetch failed with ${imageResponse.status}`);
+        const images = extractEtsyResults(imagePayload);
+        const imageUrl = imageUrlFromImages(images);
+        console.log("[IMAGE FETCH RESULT]", { listing_id: listingId, image_url: imageUrl });
+        if (imageUrl) imageMap.set(listingId, { images, image_url: imageUrl });
+      } catch (error) {
+        etsyDebug("Etsy listing image fetch failed", {
+          listing_id: listingId,
+          message: error instanceof Error ? error.message : String(error)
+        });
+      }
+    }
+    return imageMap;
+  };
+  return Promise.race([
+    fetchImages(),
+    new Promise((resolve) => setTimeout(() => resolve(new Map()), 5000))
+  ]);
+}
+
 async function fetchActiveEtsyListingsWithImages(tokens = {}, context = {}) {
   tokens = await ensureValidEtsyToken(tokens, context.res, context.req);
   const endpoint = `${ETSY_API_BASE}/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?limit=100&includes=Images`;
@@ -1940,12 +2000,15 @@ async function fetchActiveEtsyListingsWithImages(tokens = {}, context = {}) {
   }
   const rawListings = extractEtsyResults(payload);
   console.log("[RAW FIRST LISTING]", JSON.stringify(rawListings[0] || {}).slice(0, 1000));
+  const fetchedImageMap = await fetchVisibleListingImageMap(rawListings, tokens);
   return rawListings.map((listing) => {
+    const listingId = normalizeListingId(listing.listing_id || listing.id);
     const images = listing.images || listing.Images || [];
-    const imageUrl = listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
+    const fetchedImage = fetchedImageMap.get(listingId) || {};
+    const imageUrl = fetchedImage.image_url || listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
     return {
       ...listing,
-      images,
+      images: fetchedImage.images || images,
       image_url: imageUrl,
       thumbnail_url: imageUrl
     };
