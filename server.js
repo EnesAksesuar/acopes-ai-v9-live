@@ -170,16 +170,81 @@ function publicEtsyAuth(tokens = {}) {
     shop_url: tokens.shop_url || "",
     token_type: tokens.token_type || "Bearer",
     scope: tokens.scope || ETSY_SCOPES,
+    source: tokens.source || "",
+    last_refresh_status: tokens.last_refresh_status || "",
     updated_at: new Date().toISOString()
   };
 }
 
+function etsyAuthCookieKey() {
+  return nodeCrypto.createHash("sha256").update(String(SESSION_SECRET || "acopes2026secret")).digest();
+}
+
+function encodeEncryptedCookiePayload(payload = {}) {
+  const iv = nodeCrypto.randomBytes(12);
+  const cipher = nodeCrypto.createCipheriv("aes-256-gcm", etsyAuthCookieKey(), iv);
+  const encrypted = Buffer.concat([
+    cipher.update(JSON.stringify(payload), "utf8"),
+    cipher.final()
+  ]);
+  const tag = cipher.getAuthTag();
+  return [
+    "v1",
+    iv.toString("base64url"),
+    encrypted.toString("base64url"),
+    tag.toString("base64url")
+  ].join(".");
+}
+
+function decodeEncryptedCookiePayload(value = "") {
+  const [version, ivText, encryptedText, tagText] = String(value || "").split(".");
+  if (version !== "v1" || !ivText || !encryptedText || !tagText) return {};
+  const decipher = nodeCrypto.createDecipheriv(
+    "aes-256-gcm",
+    etsyAuthCookieKey(),
+    Buffer.from(ivText, "base64url")
+  );
+  decipher.setAuthTag(Buffer.from(tagText, "base64url"));
+  const decrypted = Buffer.concat([
+    decipher.update(Buffer.from(encryptedText, "base64url")),
+    decipher.final()
+  ]);
+  return JSON.parse(decrypted.toString("utf8"));
+}
+
 function readEtsyAuthCookie(req) {
-  return {};
+  try {
+    const cookies = parseCookies(req?.headers?.cookie || "");
+    const rawCookie = cookies.acopes_etsy_auth || "";
+    if (!rawCookie) return {};
+    const payload = decodeEncryptedCookiePayload(rawCookie);
+    const auth = publicEtsyAuth({ ...payload, source: "cookie" });
+    console.log("[ETSY AUTH COOKIE READ]", {
+      hasAccessToken: Boolean(auth.access_token),
+      hasRefreshToken: Boolean(auth.refresh_token),
+      shop_id: auth.shop_id || ""
+    });
+    return auth.access_token || auth.refresh_token ? auth : {};
+  } catch (error) {
+    console.warn("[ETSY AUTH COOKIE INVALID]", { error: error instanceof Error ? error.message : String(error) });
+    return {};
+  }
 }
 
 function setEtsyAuthCookie(res, tokens = {}) {
-  clearEtsyAuthCookie(res);
+  if (!res || (!tokens.access_token && !tokens.refresh_token)) return;
+  const auth = publicEtsyAuth(tokens);
+  const payload = {
+    ...auth,
+    source: "cookie",
+    saved_at: new Date().toISOString()
+  };
+  appendSetCookie(res, `acopes_etsy_auth=${encodeURIComponent(encodeEncryptedCookiePayload(payload))}; ${authCookieOptions(7 * 24 * 60 * 60)}`);
+  console.log("[ETSY AUTH COOKIE SAVED]", {
+    hasAccessToken: Boolean(auth.access_token),
+    hasRefreshToken: Boolean(auth.refresh_token),
+    shop_id: auth.shop_id || ""
+  });
 }
 
 function clearEtsyAuthCookie(res) {
@@ -197,7 +262,7 @@ function clearOauthCookies(res) {
 
 async function persistEtsyAuth(res, tokens = {}) {
   const auth = publicEtsyAuth(tokens);
-  clearEtsyAuthCookie(res);
+  setEtsyAuthCookie(res, auth);
   return auth;
 }
 
@@ -468,17 +533,43 @@ async function getSessionUser(session) {
 }
 
 async function resolveRequestEtsyAuth(req) {
+  const header = String(req?.headers?.authorization || "");
+  const match = header.match(/^Bearer\s+(.+)$/i);
+  if (match) {
+    try {
+      const payload = jwt.verify(match[1], SESSION_SECRET);
+      if (payload?.etsy_auth?.access_token || payload?.etsy_auth?.refresh_token) {
+        const auth = publicEtsyAuth({ ...payload.etsy_auth, source: "jwt" });
+        if (req.session) {
+          if (payload.email) req.session.email = normalizeEmail(payload.email);
+          if (payload.user_id) req.session.user_id = payload.user_id;
+          req.session.etsy_auth = auth;
+        }
+        req.etsyAuth = auth;
+        return auth;
+      }
+    } catch (error) {
+      console.log("[JWT ETSY AUTH] invalid token", { message: error instanceof Error ? error.message : String(error) });
+    }
+  }
   if (req.session?.etsy_auth?.access_token || req.session?.etsy_auth?.refresh_token) {
-    return req.session.etsy_auth;
+    return publicEtsyAuth({ ...req.session.etsy_auth, source: req.session.etsy_auth.source || "session" });
+  }
+  const cookieAuth = readEtsyAuthCookie(req);
+  if (cookieAuth.access_token || cookieAuth.refresh_token) {
+    if (req.session) req.session.etsy_auth = cookieAuth;
+    req.etsyAuth = cookieAuth;
+    return cookieAuth;
   }
   const user = req.user || await getSessionUser(req.session);
   if (user?.etsy_auth?.access_token || user?.etsy_auth?.refresh_token) {
     req.user = user;
     req.session.email ||= user.email;
     req.session.user_id ||= user.id;
-    req.session.etsy_auth = user.etsy_auth;
-    req.etsyAuth = user.etsy_auth;
-    return user.etsy_auth;
+    const auth = publicEtsyAuth({ ...user.etsy_auth, source: user.etsy_auth.source || "user" });
+    req.session.etsy_auth = auth;
+    req.etsyAuth = auth;
+    return auth;
   }
   return {};
 }
@@ -3165,6 +3256,7 @@ async function handleActivateEtsyToken(req, res) {
   req.session.etsy_auth = user.etsy_auth;
   req.user = user;
   req.etsyAuth = user.etsy_auth;
+  setEtsyAuthCookie(res, user.etsy_auth);
   console.log("[ACTIVATE TOKEN SUCCESS]", {
     email,
     shop_id: user.etsy_auth?.shop_id || "",
