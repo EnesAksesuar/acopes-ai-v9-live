@@ -919,13 +919,19 @@ function latestOptimizationForListing(listingId = "") {
   return optimizationRecords.find((record) => String(record.listing_id || "") === normalizedId && recordOutputValid(record));
 }
 
-function optimizedClipboardPayload(listingId = "") {
+function optimizedFieldPayload(listingId = "") {
   const record = latestOptimizationForListing(listingId);
   const product = liveListingById(listingId) || products.find((item) => String(item.listing_id || "") === String(listingId || "")) || {};
   const after = record?.after || {};
-  const title = optimizedTitleFrom(after, product);
-  const tags = optimizedTagsFrom(after);
-  const description = optimizedDescriptionFrom(after) || product.optimized_description || product.description || "";
+  return {
+    title: optimizedTitleFrom(after, product),
+    tags: optimizedTagsFrom(after),
+    description: optimizedDescriptionFrom(after) || product.optimized_description || product.description || ""
+  };
+}
+
+function optimizedClipboardPayload(listingId = "") {
+  const { title, tags, description } = optimizedFieldPayload(listingId);
   if (!title && !tags.length && !description) return "";
   return [
     `TITLE: ${title}`,
@@ -936,8 +942,7 @@ function optimizedClipboardPayload(listingId = "") {
   ].join("\n");
 }
 
-async function copyOptimizedData(listingId = "") {
-  const text = optimizedClipboardPayload(listingId);
+async function writeClipboardText(text = "", successMessage = "Copied! Paste directly into Etsy") {
   if (!text) {
     showToast("Generate an optimization before copying.", "error");
     return;
@@ -956,17 +961,34 @@ async function copyOptimizedData(listingId = "") {
       document.execCommand("copy");
       textarea.remove();
     }
-    showToast("Copied! Paste directly into Etsy", "success");
+    showToast(successMessage, "success");
   } catch (error) {
     debugLog("copy optimized data failed", error);
     showToast("Copy failed. Try again from the optimization card.", "error");
   }
 }
 
+async function copyOptimizedField(listingId = "", field = "") {
+  const payload = optimizedFieldPayload(listingId);
+  if (field === "title") {
+    await writeClipboardText(payload.title, "Title copied!");
+    return;
+  }
+  if (field === "tags") {
+    await writeClipboardText(payload.tags.join(", "), "Tags copied!");
+    return;
+  }
+  if (field === "description") {
+    await writeClipboardText(payload.description, "Description copied!");
+    return;
+  }
+  await writeClipboardText(optimizedClipboardPayload(listingId));
+}
+
 function openEtsyListingEditor(listingId = "") {
   const normalizedId = String(listingId || "").trim();
-  if (!normalizedId) {
-    showToast("Listing ID missing. Refresh Etsy Listings first.", "error");
+  if (!/^\d+$/.test(normalizedId)) {
+    showToast("Numeric Etsy listing ID missing. Refresh Etsy Listings first.", "error");
     return;
   }
   window.open(`https://www.etsy.com/your/listings/${encodeURIComponent(normalizedId)}/edit`, "_blank", "noopener,noreferrer");
@@ -1357,8 +1379,10 @@ function renderProducts() {
                 <p>${escapeHtml(optimizedDescription)}</p>
                 <small>${escapeList(optimizedTags)}</small>
                 <div class="optimization-actions inline-actions">
-                  <button type="button" class="ghost" data-copy-optimized="${escapeAttribute(product.listing_id)}">Copy Title & Tags</button>
-                  <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy</button>
+                  <button type="button" class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Title</button>
+                  <button type="button" class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Tags</button>
+                  <button type="button" class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Description</button>
+                  <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy ↗</button>
                 </div>
               </div>
             ` : ""}
@@ -1395,7 +1419,9 @@ function renderProducts() {
           ${optimization?.status === "completed" ? `
             <b class="completed-badge">Optimization completed</b>
             <div class="optimization-actions inline-actions">
-              <button type="button" class="ghost" data-copy-optimized="${escapeAttribute(product.listing_id)}">Copy Title & Tags</button>
+              <button type="button" class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Title</button>
+              <button type="button" class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Tags</button>
+              <button type="button" class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Description</button>
               <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy ↗</button>
             </div>
           ` : ""}
@@ -1544,7 +1570,9 @@ function renderOptimizations(records) {
           </details>
           <div class="optimization-actions">
             <button class="ghost toggle-view" data-toggle="${escapeAttribute(record.id)}">Show before</button>
-            <button class="ghost" data-copy-optimized="${escapeAttribute(record.listing_id)}">Copy Title & Tags</button>
+            <button class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(record.listing_id)}">Copy Title</button>
+            <button class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(record.listing_id)}">Copy Tags</button>
+            <button class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(record.listing_id)}">Copy Description</button>
             <button class="ghost" data-open-etsy="${escapeAttribute(record.listing_id)}">Open in Etsy ↗</button>
             <button data-approve="${escapeAttribute(record.id)}">Approve Draft</button>
           </div>
@@ -2092,10 +2120,10 @@ optimizationsEl?.addEventListener("click", async (event) => {
     await refreshOptimizations();
     return;
   }
-  const copyButton = event.target.closest("[data-copy-optimized]");
+  const copyButton = event.target.closest("[data-copy-field]");
   if (copyButton) {
     event.preventDefault();
-    await copyOptimizedData(copyButton.dataset.copyOptimized);
+    await copyOptimizedField(copyButton.dataset.copyListing, copyButton.dataset.copyField);
     return;
   }
   const openButton = event.target.closest("[data-open-etsy]");
@@ -2132,10 +2160,10 @@ optimizationsEl?.addEventListener("click", async (event) => {
 });
 
 productsEl?.addEventListener("click", async (event) => {
-  const copyButton = event.target.closest("[data-copy-optimized]");
+  const copyButton = event.target.closest("[data-copy-field]");
   if (copyButton) {
     event.preventDefault();
-    await copyOptimizedData(copyButton.dataset.copyOptimized);
+    await copyOptimizedField(copyButton.dataset.copyListing, copyButton.dataset.copyField);
     return;
   }
   const openButton = event.target.closest("[data-open-etsy]");
