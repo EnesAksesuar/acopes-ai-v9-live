@@ -2228,9 +2228,9 @@ async function discoverEtsyShop(tokens, context = {}) {
   }
   let shop = selectActiveShop(shops);
   let foundShopCount = shops.length;
-  if (!shopIdFromShop(shop) && FALLBACK_SHOP_NAME) {
+  const _shopNameFallback = FALLBACK_SHOP_NAME || tokens.shop_name || ""; if (!shopIdFromShop(shop) && _shopNameFallback) {
     try {
-      const shopNamePayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/shops?shop_name=${encodeURIComponent(FALLBACK_SHOP_NAME.toLowerCase())}`, tokens, "shop_name_lookup");
+      const shopNamePayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/shops?shop_name=${encodeURIComponent(_shopNameFallback.toLowerCase())}`, tokens, "shop_name_lookup");
       console.log("[ETSY DEBUG] RAW SHOP RESPONSE", JSON.stringify(shopNamePayload, null, 2));
       const shopNameShops = extractEtsyResults(shopNamePayload);
       foundShopCount += shopNameShops.length;
@@ -4211,3 +4211,5 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
+
