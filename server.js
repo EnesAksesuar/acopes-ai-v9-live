@@ -2585,7 +2585,7 @@ async function safeEtsyStatus(tokens = {}) {
 }
 
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
-  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
+  const endpoint = `${ETSY_API_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
   console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
   const response = await fetch(endpoint, {
     method: "GET",
@@ -2669,7 +2669,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   }
 
   const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
-  const etsyUpdateBase = ETSY_API_FALLBACK_BASE;
+  const etsyUpdateBase = ETSY_API_BASE;
   const verifyEndpoint = `${etsyUpdateBase}${listingPath}`;
   console.log("[DIRECT LISTING VERIFY]", {
     endpoint: verifyEndpoint,
@@ -4211,6 +4211,8 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
+
 
 
 
