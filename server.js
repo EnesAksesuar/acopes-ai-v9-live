@@ -2208,7 +2208,7 @@ async function discoverEtsyShop(tokens, context = {}) {
   if (tokens.shop_id && tokens.shop_name) return tokens;
   let me = {};
   try {
-    me = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/users/__SELF__`, tokens, "users_self");
+    me = await fetchEtsyShopLookup(`${ETSY_API_BASE}/users/__SELF__`, tokens, "users_self");
     etsyDebug("User fetched", { user_id: extractEtsyUserId(me, tokens) });
   } catch (error) {
     etsyDebug("User __SELF__ fetch failed", { error: error instanceof Error ? error.message : String(error) });
@@ -2217,7 +2217,7 @@ async function discoverEtsyShop(tokens, context = {}) {
   let shops = [];
   if (userId) {
     try {
-      const shopsPayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/users/${encodeURIComponent(userId)}/shops`, tokens, "user_shops");
+      const shopsPayload = await fetchEtsyShopLookup(`${ETSY_API_BASE}/users/${encodeURIComponent(userId)}/shops`, tokens, "user_shops");
       console.log("[ETSY DEBUG] RAW SHOP RESPONSE", JSON.stringify(shopsPayload, null, 2));
       shops = extractEtsyResults(shopsPayload);
     } catch (error) {
@@ -2230,7 +2230,7 @@ async function discoverEtsyShop(tokens, context = {}) {
   let foundShopCount = shops.length;
   const _shopNameFallback = FALLBACK_SHOP_NAME || tokens.shop_name || ""; if (!shopIdFromShop(shop) && _shopNameFallback) {
     try {
-      const shopNamePayload = await fetchEtsyShopLookup(`${ETSY_API_FALLBACK_BASE}/shops?shop_name=${encodeURIComponent(_shopNameFallback.toLowerCase())}`, tokens, "shop_name_lookup");
+      const shopNamePayload = await fetchEtsyShopLookup(`${ETSY_API_BASE}/shops?shop_name=${encodeURIComponent(_shopNameFallback.toLowerCase())}`, tokens, "shop_name_lookup");
       console.log("[ETSY DEBUG] RAW SHOP RESPONSE", JSON.stringify(shopNamePayload, null, 2));
       const shopNameShops = extractEtsyResults(shopNamePayload);
       foundShopCount += shopNameShops.length;
@@ -4211,5 +4211,7 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
+
 
 
