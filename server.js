@@ -1889,7 +1889,7 @@ function etsyConfigured() {
 
 function etsyApiHeaders(accessToken) {
   return {
-    "x-api-key": `${process.env.ETSY_CLIENT_ID || ""}:${process.env.ETSY_CLIENT_SECRET || ""}`,
+    "x-api-key": process.env.ETSY_CLIENT_ID || "",
     "Authorization": `Bearer ${accessToken}`
   };
 }
@@ -2759,7 +2759,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   });
   const putHeaders = {
     "Content-Type": "application/x-www-form-urlencoded",
-    "x-api-key": `${process.env.ETSY_CLIENT_ID || ""}:${process.env.ETSY_CLIENT_SECRET || ""}`,
+    "x-api-key": process.env.ETSY_CLIENT_ID || "",
     "Authorization": `Bearer ${tokens.access_token}`
   };
   const method = "PUT";
@@ -4211,6 +4211,7 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
 
 
 
