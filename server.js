@@ -2205,8 +2205,10 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  const listingPath = `/listings/${encodeURIComponent(liveListingId)}`;
-  const verifyEndpoint = `${ETSY_API_BASE}${listingPath}`;
+  const verifyPath = `/listings/${encodeURIComponent(liveListingId)}`;
+const putPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+const verifyEndpoint = `${ETSY_API_BASE}${verifyPath}`;
+
   console.log("[ETSY VERIFY LISTING GET]", {
     url: verifyEndpoint,
     shop_id: shopId,
@@ -2254,7 +2256,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  let endpoint = `${ETSY_API_BASE}${listingPath}`;
+  let endpoint = `${ETSY_API_BASE}${putPath}`;
   console.log("[ETSY PUT BASE USED]", ETSY_API_BASE);
   console.log("[ETSY PUT URL]", endpoint);
   console.log("[ETSY SHOP ID]", shopId);
