@@ -1722,9 +1722,8 @@ function etsyConfigured() {
 }
 
 function etsyApiHeaders(accessToken) {
-  const etsyApiKey = `${process.env.ETSY_CLIENT_ID}:${process.env.ETSY_CLIENT_SECRET}`;
   return {
-    "x-api-key": etsyApiKey,
+    "x-api-key": process.env.ETSY_CLIENT_ID || "",
     "Authorization": `Bearer ${accessToken}`
   };
 }
@@ -2391,45 +2390,35 @@ function normalizeTitleForMatch(value = "") {
 }
 
 async function resolveLiveListingForEtsyPut(product = {}, shopId = "") {
-  const listings = (await readListingsCache(shopId)).filter((listing) => String(listing.sync_source || "") === "etsy_api");
-  if (!listings.length) {
-    console.log("[FORCE RESYNC REQUIRED]", { shop_id: shopId, reason: "empty_or_mismatched_cache" });
-  }
-  const liveIds = listings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean);
   const requestedId = normalizeListingId(product.listing_id || product.id);
-  console.log("[LIVE LISTING IDS]", {
-    shop_id: shopId,
-    count: liveIds.length,
-    first_5_listing_ids: liveIds.slice(0, 5)
-  });
   console.log("[QUEUE ITEM ID]", {
     listing_id: requestedId,
     title: product.title || product.name || ""
   });
-  if (requestedId && liveIds.includes(requestedId)) {
-    return { listing_id: requestedId, matched: "id" };
-  }
-  const productTitle = normalizeTitleForMatch(product.title || product.name || product.current_title || "");
-  const matched = productTitle
-    ? listings.find((listing) => normalizeTitleForMatch(listing.title || listing.name) === productTitle)
-      || listings.find((listing) => {
-        const liveTitle = normalizeTitleForMatch(listing.title || listing.name);
-        return liveTitle && (liveTitle.includes(productTitle) || productTitle.includes(liveTitle));
-      })
-    : null;
-  if (matched?.listing_id) {
-    return {
-      listing_id: normalizeListingId(matched.listing_id),
-      matched: "title",
-      stale_listing_id: requestedId
-    };
-  }
+  if (requestedId) return { listing_id: requestedId, matched: "request_id" };
   const error = new Error("Listing ID is stale. Refresh Etsy Listings and regenerate optimization.");
   error.code = "stale_listing_id";
   error.status = 409;
-  error.live_listing_count = liveIds.length;
   error.requested_listing_id = requestedId;
   throw error;
+}
+
+async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
+  const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
+  console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
+  const response = await fetch(endpoint, {
+    method: "GET",
+    headers: etsyApiHeaders(tokens.access_token)
+  });
+  const text = await response.text();
+  let body = {};
+  try {
+    body = text ? JSON.parse(text) : {};
+  } catch {
+    body = text;
+  }
+  console.log("[DIRECT LISTING VERIFY]", { listing_id: listingId, status: response.status, found: response.ok, body });
+  return { found: response.ok, status: response.status, body, endpoint };
 }
 
 async function updateEtsyListingDirect(req, res, product = {}) {
@@ -2501,16 +2490,16 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
   const etsyUpdateBase = ETSY_API_FALLBACK_BASE;
   const verifyEndpoint = `${etsyUpdateBase}${listingPath}`;
-  console.log("[ETSY VERIFY LISTING GET]", {
-    url: verifyEndpoint,
+  console.log("[DIRECT LISTING VERIFY]", {
+    endpoint: verifyEndpoint,
     shop_id: shopId,
     listing_id: liveListingId
   });
-  const verifyResponse = await fetch(verifyEndpoint, {
+  let verifyResponse = await fetch(verifyEndpoint, {
     method: "GET",
     headers: etsyApiHeaders(tokens.access_token)
   });
-  const verifyText = await verifyResponse.text();
+  let verifyText = await verifyResponse.text();
   let verifyPayload = {};
   try {
     verifyPayload = verifyText ? JSON.parse(verifyText) : {};
@@ -2522,30 +2511,34 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     body: verifyPayload
   });
   if (verifyResponse.status === 404) {
-    const cached = await readListingsCache(shopId);
-    const nextCache = cached.filter((listing) => normalizeListingId(listing.listing_id || listing.id) !== liveListingId);
-    await writeListingsCache(nextCache, {
-      source: "etsy_api",
-      shop_id: shopId,
-      shop_name: tokens.shop_name,
-      shop_url: tokens.shop_url
-    });
-    console.log("[LISTING REMOVED FROM CACHE]", {
-      shop_id: shopId,
-      listing_id: liveListingId,
-      before_count: cached.length,
-      after_count: nextCache.length
-    });
-    const error = new Error("Listing is not accessible in this Etsy shop. Refresh Etsy Listings.");
-    error.code = "etsy_resource_not_found";
-    error.status = 404;
-    error.payload = {
-      shop_id: shopId,
-      listing_id: liveListingId,
-      etsy_status: verifyResponse.status,
-      etsy_body: verifyPayload
-    };
-    throw error;
+    console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: shopId, listing_id: liveListingId, reason: "direct_verify_404" });
+    const syncedListings = await syncEtsyListings(tokens, res, req);
+    const syncedIds = new Set(syncedListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
+    console.log("[LIVE IDS AFTER FORCE SYNC]", { count: syncedIds.size, first_10_listing_ids: [...syncedIds].slice(0, 10) });
+    if (syncedIds.has(liveListingId)) {
+      console.log("[DIRECT LISTING VERIFY]", { listing_id: liveListingId, matched_after_force_sync: true });
+      verifyResponse = await fetch(verifyEndpoint, {
+        method: "GET",
+        headers: etsyApiHeaders(tokens.access_token)
+      });
+      verifyText = await verifyResponse.text();
+      try {
+        verifyPayload = verifyText ? JSON.parse(verifyText) : {};
+      } catch {
+        verifyPayload = verifyText;
+      }
+    } else {
+      const error = new Error("This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.");
+      error.code = "etsy_resource_not_found";
+      error.status = 404;
+      error.payload = {
+        shop_id: shopId,
+        listing_id: liveListingId,
+        etsy_status: verifyResponse.status,
+        etsy_body: verifyPayload
+      };
+      throw error;
+    }
   }
   const currentListing = Array.isArray(verifyPayload?.results)
     ? verifyPayload.results[0] || {}
@@ -3594,11 +3587,14 @@ async function handleSendBatch(req, res) {
   let failed = 0;
   try {
     let liveIds = new Set();
+    let tokens = null;
     if (directEtsyMode) {
-      const tokens = await discoverEtsyShop(await ensureValidEtsyToken(await resolveRequestEtsyAuth(req), res, req), { req, res });
-      let liveListings = await readListingsCache(tokens.shop_id);
-      if (!liveListings.length) liveListings = await syncEtsyListings(tokens, res, req);
+      console.log("[SEND SOURCE OF TRUTH]", "etsy_api");
+      tokens = await discoverEtsyShop(await ensureValidEtsyToken(await resolveRequestEtsyAuth(req), res, req), { req, res });
+      console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: tokens.shop_id || "", selected_count: requestedIds.length });
+      const liveListings = await syncEtsyListings(tokens, res, req);
       liveIds = new Set(liveListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
+      console.log("[LIVE IDS AFTER FORCE SYNC]", { count: liveIds.size, first_10_listing_ids: [...liveIds].slice(0, 10) });
       console.log("[SEND SELECTED LIVE IDS]", { liveCount: liveIds.size });
     }
     const storedOptimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
@@ -3617,13 +3613,27 @@ async function handleSendBatch(req, res) {
         continue;
       }
       if (directEtsyMode && (!liveIds.has(listingId) || (listingId === "4384247178" && !liveIds.has(listingId)))) {
-        skipped += 1;
-        console.warn("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: false, reason: "not_live_listing" });
-        console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
-        results.push(normalizeSendResult({ listing_id: listingId, status: "skipped", reason: "not_live_listing" }));
-        continue;
+        const shopId = normalizeListingId(req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || tokens?.shop_id || "");
+        const directVerify = shopId && tokens?.access_token ? await directVerifyEtsyListing(tokens, shopId, listingId) : { found: false, status: 401 };
+        if (directVerify.found) {
+          liveIds.add(listingId);
+          console.log("[SEND DECISION]", { listing_id: listingId, decision: "allow_after_direct_verify" });
+        } else {
+          skipped += 1;
+          console.warn("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: false, reason: "not_live_listing", etsy_status: directVerify.status });
+          console.warn("[SEND DECISION]", { listing_id: listingId, decision: "skipped_not_live" });
+          console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
+          results.push(normalizeSendResult({
+            listing_id: listingId,
+            status: "skipped",
+            reason: "not_live_listing",
+            message: "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings."
+          }));
+          continue;
+        }
       }
       console.log("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: true });
+      console.log("[SEND DECISION]", { listing_id: listingId, decision: "send_to_etsy" });
       const storedRecord = storedOptimizations.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
       const queueRecord = storedQueue.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
       const optimizedSendData = latestOptimizedSendData({ product, storedRecord, queueRecord });
@@ -3669,6 +3679,7 @@ async function handleSendBatch(req, res) {
       }
       try {
         await incrementAnalytics("optimization_started");
+        console.log("[ETSY PUT READY]", { listing_id: listingId, fields });
         const result = await updateEtsyListingDirect(req, res, sendProduct);
         if (result?.verified !== true || !result?.verification) {
           const error = new Error("Etsy apply verification did not run.");
@@ -3690,6 +3701,18 @@ async function handleSendBatch(req, res) {
         });
         results[results.length - 1] = normalizeSendResult(results[results.length - 1]);
       } catch (error) {
+        if (error?.code === "etsy_resource_not_found" || error?.code === "stale_listing_id") {
+          skipped += 1;
+          console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
+          results.push(normalizeSendResult({
+            listing_id: listingId,
+            status: "skipped",
+            reason: "not_live_listing",
+            message: "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.",
+            etsy_response: error?.payload || null
+          }));
+          continue;
+        }
         failed += 1;
         const reason = sendFailureReasonWithMessage(error);
         const statusCode = Number(error.status || error.payload?.etsy_status || 0) || null;
