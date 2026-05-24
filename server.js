@@ -2289,7 +2289,7 @@ const verifyEndpoint = `${ETSY_API_BASE}${verifyPath}`;
     payload = responseText;
   }
   if (!response.ok && response.status === 404) {
-    const fallbackEndpoint = `${ETSY_API_FALLBACK_BASE}${listingPath}`;
+   const fallbackEndpoint = `${ETSY_API_FALLBACK_BASE}${putPath}`;
     console.log("[ETSY PUT BASE USED]", ETSY_API_FALLBACK_BASE);
     console.log("[ETSY PUT URL]", fallbackEndpoint);
     response = await fetch(fallbackEndpoint, {
