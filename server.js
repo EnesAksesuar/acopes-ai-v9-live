@@ -980,8 +980,27 @@ function keyFeatureFromListing(listing = {}, clusters = {}) {
 
 function fallbackDescription(listing = {}, clusters = {}) {
   const location = listing.location || listing.shop_location || listing.ships_from || "";
-  const sentence = `${titleCaseWords(clusters.product_type)} in ${clusters.material_keyword}, ${clusters.style_keyword} design. Perfect ${clusters.occasion_keyword} gift. ${keyFeatureFromListing(listing, clusters)}${location ? ` Ships from ${location}.` : ""}`;
-  return sentence.split(/\s+/).slice(0, 150).join(" ");
+  const productType = clusters.product_type || detectJewelryProductType(listing) || "jewelry";
+  const material = clusters.material_keyword || "gold";
+  const style = clusters.style_keyword || "minimalist";
+  const gift = clusters.gift_keyword || "gift for her";
+  const occasion = clusters.occasion_keyword || "birthday";
+  const feature = keyFeatureFromListing(listing, clusters);
+  const productLabel = titleCaseWords(productTitleLabel(listing, clusters));
+  const titleHint = listing.title || listing.name || productLabel;
+  const locationSentence = location ? ` Each piece ships from ${location}, ready to become part of a polished daily jewelry rotation.` : " Each piece is prepared with care, ready to become part of a polished daily jewelry rotation.";
+  const description = [
+    `${productLabel} made for the woman who loves soft shine, refined styling, and jewelry that feels effortless from morning plans to evening moments. Inspired by ${titleHint}, this ${productType} brings a ${style} mood with the quiet confidence of ${material}, making it easy to wear alone or layer with your favorite everyday pieces. It is perfect for someone who wants jewelry that feels feminine, modern, and meaningful without looking overdone.`,
+    `✦ Material: ${material}
+✦ Style: ${style}
+✦ Perfect for: ${occasion} styling, everyday outfits, and ${gift}
+✦ Gift ready: Yes — arrives in gift packaging
+✦ Care: Keep away from water and perfume`,
+    `This is a thoughtful choice for birthdays, anniversaries, bridesmaid gifts, holiday moments, or a self-care treat that feels personal and elegant. ${feature} Handmade in small batches for a more intentional finish, it is designed for buyers who want a giftable piece with a premium, quiet-luxury feel.${locationSentence}`
+  ].join("\n\n");
+  const words = description.split(/\s+/);
+  if (words.length <= 200) return description;
+  return `${words.slice(0, 200).join(" ").replace(/\s+([—,.;:])/g, "$1")}.`;
 }
 
 function productTitleLabel(listing = {}, clusters = {}) {
@@ -1191,7 +1210,10 @@ function ensureOptimizationContent(optimized = {}, listing = {}) {
   );
   let tags = optimized.tags?.length ? optimized.tags : optimized.optimized_tags?.length ? optimized.optimized_tags : generateEtsyTags(listing, optimizationMode);
   tags = tags.length === 13 ? tags : generateEtsyTags({ ...listing, tags }, optimizationMode);
-  let description = optimized.description || optimized.optimized_description || `${title} is optimized for ${clusters.secondary_keyword}, mobile-first Etsy search, and draft-safe buyer intent. It preserves the original ${clusters.product_type} category while highlighting ${clusters.material_keyword}, ${clusters.style_keyword}, and ${clusters.gift_keyword}.`;
+  let description = optimized.description || optimized.optimized_description || "";
+  if (description.split(/\s+/).filter(Boolean).length < 120 || /category-safe Etsy SEO rewrite|mobile-first Etsy search|draft-safe buyer intent/i.test(description)) {
+    description = fallbackDescription(listing, clusters);
+  }
   let candidate = {
     ...optimized,
     seo_title: title,

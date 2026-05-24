@@ -991,7 +991,7 @@ function openEtsyListingEditor(listingId = "") {
     showToast("Numeric Etsy listing ID missing. Refresh Etsy Listings first.", "error");
     return;
   }
-  window.open(`https://www.etsy.com/your/listings/${encodeURIComponent(normalizedId)}/edit`, "_blank", "noopener,noreferrer");
+  window.open(`https://www.etsy.com/listing/${encodeURIComponent(normalizedId)}/edit`, "_blank", "noopener,noreferrer");
 }
 
 function detectJewelryProductType(listing = {}) {
