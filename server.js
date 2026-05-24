@@ -1651,7 +1651,15 @@ function createPkcePair() {
 }
 
 function normalizeListing(listing = {}) {
-  const image = listing.image_url || listing.image || listing.Images?.[0]?.url_fullxfull || listing.Images?.[0]?.url_570xN || "";
+  const primaryImage = listing.Images?.[0] || listing.images?.[0] || listing.image || {};
+  const image = listing.image_url
+    || (typeof listing.image === "string" ? listing.image : "")
+    || primaryImage.url_fullxfull
+    || primaryImage.url_570xN
+    || primaryImage.url_75x75
+    || primaryImage.url_170x135
+    || primaryImage.url
+    || "";
   const title = listing.title || listing.name || "";
   const tags = Array.isArray(listing.tags) ? listing.tags : [];
   return {

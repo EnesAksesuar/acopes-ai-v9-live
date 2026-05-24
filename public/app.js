@@ -504,7 +504,7 @@ function renderThumbnailBreakdown() {
 function imageOrPlaceholder(src, classes = "", attrs = "") {
   const safeClasses = escapeAttribute(classes);
   if (!src) return `<span class="luxury-placeholder ${safeClasses}" ${attrs}><i>ACOPES AI</i></span>`;
-  return `<img class="${safeClasses}" src="${escapeAttribute(src)}" alt="" ${attrs} data-placeholder-class="${safeClasses}" onerror="this.replaceWith(createLuxuryPlaceholder(this.dataset.placeholderClass || ''))" />`;
+  return `<img class="${safeClasses}" src="${escapeAttribute(src)}" alt="" ${attrs} style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;" data-placeholder-class="${safeClasses}" onerror="this.replaceWith(createLuxuryPlaceholder(this.dataset.placeholderClass || ''))" />`;
 }
 
 window.createLuxuryPlaceholder = function createLuxuryPlaceholder(classes = "") {
