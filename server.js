@@ -3618,10 +3618,12 @@ async function handleSendBatch(req, res) {
       }
       if (directEtsyMode && (!liveIds.has(listingId) || (listingId === "4384247178" && !liveIds.has(listingId)))) {
         skipped += 1;
+        console.warn("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: false, reason: "not_live_listing" });
         console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
         results.push(normalizeSendResult({ listing_id: listingId, status: "skipped", reason: "not_live_listing" }));
         continue;
       }
+      console.log("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: true });
       const storedRecord = storedOptimizations.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
       const queueRecord = storedQueue.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
       const optimizedSendData = latestOptimizedSendData({ product, storedRecord, queueRecord });

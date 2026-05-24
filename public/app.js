@@ -975,8 +975,8 @@ function liveListingIds() {
 
 function renderedLiveListingIds() {
   const renderedIds = new Set(
-    [...document.querySelectorAll(".product-card [data-product-id]")]
-      .map((input) => String(input.dataset.productId || ""))
+    [...document.querySelectorAll(".product-card[data-listing-id]")]
+      .map((card) => String(card.dataset.listingId || ""))
       .filter(Boolean)
   );
   return renderedIds.size ? renderedIds : liveListingIds();
@@ -1083,7 +1083,7 @@ async function hardResetStaleQueue() {
 function selectedProducts() {
   if (!selectedListingIds.size) {
     document.querySelectorAll("[data-product-id]:checked").forEach((checkbox) => {
-      const productId = String(checkbox.dataset.productId || "");
+      const productId = String(checkbox.closest(".product-card")?.dataset.listingId || "");
       if (liveListingIds().has(productId)) selectedListingIds.add(productId);
       else if (productId) console.log("[SELECTION BLOCKED STALE ID]", { listing_id: productId });
     });
@@ -1095,11 +1095,11 @@ function selectedProducts() {
 function rebuildSelectedListingIdsFromDom() {
   const liveIds = liveListingIds();
   const rebuiltIds = [...document.querySelectorAll('input[type="checkbox"]:checked')]
-    .map((checkbox) => checkbox.dataset.productId || checkbox.closest(".product-card")?.querySelector("[data-product-id]")?.dataset.productId || "")
+    .map((checkbox) => checkbox.closest(".product-card")?.dataset.listingId || "")
     .filter(Boolean)
     .map(String)
     .filter((id) => {
-      const keep = liveIds.has(id);
+      const keep = liveIds.has(id) && renderedLiveListingIds().has(id);
       if (!keep) console.log("[SELECTION BLOCKED STALE ID]", { listing_id: id });
       return keep;
     });
@@ -1739,8 +1739,8 @@ function renderProducts() {
         ? `<img class="listing-image lazy-listing-image" data-listing-id="${escapeAttribute(listingId)}" src="${escapeAttribute(placeholderImageSrc())}" alt="${escapeAttribute(product.title || product.name || "Etsy listing")}" style="width:100%;height:100%;object-fit:cover;border-radius:12px;display:block;position:relative;z-index:2;" onerror="this.parentElement.innerHTML='ACOPES AI'" />`
         : fallbackImageMarkup();
       return `
-        <label class="product-card ${animated}">
-          <input type="checkbox" data-product-index="${index}" data-product-id="${escapeAttribute(selectionId)}" ${selectedListingIds.has(selectionId) ? "checked" : ""} />
+        <label class="product-card ${animated}" data-listing-id="${escapeAttribute(listingId)}">
+          <input type="checkbox" value="${escapeAttribute(listingId)}" data-product-index="${index}" data-product-id="${escapeAttribute(listingId)}" data-listing-id="${escapeAttribute(listingId)}" ${selectedListingIds.has(listingId) ? "checked" : ""} />
           <div class="thumb-wrap">
             ${thumbnailHtml}
           </div>
@@ -2284,6 +2284,7 @@ async function refreshListings() {
     etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
     const liveIdsAfterLoad = liveListingIds();
+    console.log("[LIVE LISTING IDS REBUILT]", [...liveIdsAfterLoad]);
     selectedListingIds.clear();
     console.log("[SELECTION CLEANUP COMPLETE]", [...selectedListingIds], { live_count: liveIdsAfterLoad.size });
     optimizationRecords = [];
@@ -2414,6 +2415,8 @@ async function sendBatch(productsToSend) {
   sendBatchBtn.textContent = "Sending...";
   try {
     const liveIds = renderedLiveListingIds();
+    console.log("[SEND BATCH SELECTED IDS]", productsToSend.map((listing) => String(listing.listing_id || listing.id || "")));
+    console.log("[SEND BATCH LIVE IDS]", [...liveIds]);
     console.log("[SEND PRECHECK LIVE IDS]", [...liveIds]);
     console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
     pruneStaleOptimizationState("before_send", liveIds);
@@ -2426,6 +2429,7 @@ async function sendBatch(productsToSend) {
     productsToSend = productsToSend.filter((listing) => {
       const id = String(listing.listing_id || "");
       const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
+      console.log("[SEND BATCH ID MATCH CHECK]", { listing_id: id || "missing", matched: keep });
       if (!keep) console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
       return keep;
     });
@@ -2804,13 +2808,15 @@ productsEl?.addEventListener("click", async (event) => {
   const optimizeButton = event.target.closest("[data-optimize-now]");
   if (optimizeButton) {
     event.preventDefault();
-    await optimizeSingleListingById(optimizeButton.dataset.optimizeNow);
+    const cardId = optimizeButton.closest(".product-card")?.dataset.listingId || optimizeButton.dataset.optimizeNow;
+    await optimizeSingleListingById(cardId);
     return;
   }
   const card = event.target.closest(".product-card");
   if (card && !event.target.closest("button,input,[data-preview]")) {
     const checkbox = card.querySelector("[data-product-id]");
-    const product = products.find((item, index) => productSelectionId(item, index) === checkbox?.dataset.productId);
+    const cardListingId = String(card.dataset.listingId || checkbox?.dataset.listingId || "");
+    const product = liveListingById(cardListingId);
     if (product) selectStudioProduct(product);
   }
   const copyButton = event.target.closest("[data-copy-field]");
@@ -2887,7 +2893,7 @@ optimizationStudioEl?.addEventListener("click", async (event) => {
 productsEl?.addEventListener("change", (event) => {
   const checkbox = event.target.closest("[data-product-id]");
   if (!checkbox) return;
-  const productId = String(checkbox.dataset.productId || "");
+  const productId = String(checkbox.closest(".product-card")?.dataset.listingId || checkbox.dataset.listingId || "");
   if (!productId) return;
   if (!liveListingIds().has(productId)) {
     console.log("[SELECTION BLOCKED STALE ID]", { listing_id: productId, source: "toggle" });
