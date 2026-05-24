@@ -1355,19 +1355,17 @@ function renderProducts() {
       const optimizedTags = optimizedTagsFrom(displayAfter);
       const outputSource = optimization?.final_output_source || displayAfter?.final_output_source || "";
       const listingImage = product.image_url || product.thumbnail_url || "";
-      console.log("[PRODUCT IMAGE URL]", {
-        listing_id: product.listing_id,
-        image_url: product.image_url || "",
-        thumbnail_url: product.thumbnail_url || ""
-      });
-      const previewImage = displayAfter?.thumbnail_preview_url || listingImage;
+      console.log("[CARD RENDER IMAGE]", product.listing_id, listingImage);
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
-      const previewAttr = previewImage ? `data-preview="${escapeAttribute(previewImage)}"` : "";
+      const previewAttr = listingImage ? `data-preview="${escapeAttribute(listingImage)}"` : "";
+      const thumbnailHtml = listingImage
+        ? `<img src="${escapeAttribute(listingImage)}" alt="" ${previewAttr} style="width:100%;height:100%;object-fit:cover;border-radius:12px;display:block;" onerror="this.parentElement.innerHTML='ACOPES AI'" />`
+        : `<span class="luxury-placeholder"><i>ACOPES AI</i></span>`;
       return `
         <label class="product-card ${animated}">
           <input type="checkbox" data-product-index="${index}" data-product-id="${escapeAttribute(selectionId)}" ${selectedListingIds.has(selectionId) ? "checked" : ""} />
           <div class="thumb-wrap">
-            ${imageOrPlaceholder(previewImage, "", previewAttr)}
+            ${thumbnailHtml}
           </div>
           <div class="product-copy">
             <div class="product-topline">
