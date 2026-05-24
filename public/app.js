@@ -1392,7 +1392,13 @@ function renderProducts() {
               `;
             })()}
           </div>
-          ${optimization?.status === "completed" ? `<b class="completed-badge">Optimization completed</b>` : ""}
+          ${optimization?.status === "completed" ? `
+            <b class="completed-badge">Optimization completed</b>
+            <div class="optimization-actions inline-actions">
+              <button type="button" class="ghost" data-copy-optimized="${escapeAttribute(product.listing_id)}">Copy Title & Tags</button>
+              <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy ↗</button>
+            </div>
+          ` : ""}
           ${optimization?.status === "failed" ? `<button class="retry-optimization" data-retry-optimization="${escapeAttribute(optimization.id)}">Retry failed optimization</button>` : ""}
         </label>
       `;
@@ -1539,7 +1545,7 @@ function renderOptimizations(records) {
           <div class="optimization-actions">
             <button class="ghost toggle-view" data-toggle="${escapeAttribute(record.id)}">Show before</button>
             <button class="ghost" data-copy-optimized="${escapeAttribute(record.listing_id)}">Copy Title & Tags</button>
-            <button class="ghost" data-open-etsy="${escapeAttribute(record.listing_id)}">Open in Etsy</button>
+            <button class="ghost" data-open-etsy="${escapeAttribute(record.listing_id)}">Open in Etsy ↗</button>
             <button data-approve="${escapeAttribute(record.id)}">Approve Draft</button>
           </div>
         </article>
