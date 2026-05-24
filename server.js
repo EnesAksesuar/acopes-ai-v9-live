@@ -3312,6 +3312,14 @@ async function handleActivateEtsyToken(req, res) {
     token_active: Boolean(tokenActive),
     has_etsy_auth: Boolean(user?.etsy_auth)
   });
+  const cookieTokensFallback = await resolveRequestEtsyAuth(req);
+  if (!user && cookieTokensFallback && cookieTokensFallback.shop_id && cookieTokensFallback.access_token) {
+    req.session.email = email; req.session.onboarding_completed = true;
+    setEtsyAuthCookie(res, cookieTokensFallback);
+    console.log("[ACTIVATE TOKEN COOKIE FALLBACK]", { shop_id: cookieTokensFallback.shop_id });
+    const etsyF = normalizeEtsyAuth(cookieTokensFallback);
+    return res.json(successResponse({ status: "activated", connected: true, shop_id: etsyF.shop_id, shop_name: etsyF.shop_name, etsy: { ...etsyF, connected: true } }, "Etsy session activated"));
+  }
   if (!user || !tokenMatches || !tokenActive || !user.etsy_auth) {
     console.log("[ACTIVATE TOKEN FAILED]", {
       email,
