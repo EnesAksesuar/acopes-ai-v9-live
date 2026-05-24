@@ -1354,7 +1354,13 @@ function renderProducts() {
       const optimizedDescription = optimizedDescriptionFrom(displayAfter);
       const optimizedTags = optimizedTagsFrom(displayAfter);
       const outputSource = optimization?.final_output_source || displayAfter?.final_output_source || "";
-      const previewImage = displayAfter?.thumbnail_preview_url || product.image_url;
+      const listingImage = product.image_url || product.thumbnail_url || "";
+      console.log("[PRODUCT IMAGE URL]", {
+        listing_id: product.listing_id,
+        image_url: product.image_url || "",
+        thumbnail_url: product.thumbnail_url || ""
+      });
+      const previewImage = displayAfter?.thumbnail_preview_url || listingImage;
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
       const previewAttr = previewImage ? `data-preview="${escapeAttribute(previewImage)}"` : "";
       return `

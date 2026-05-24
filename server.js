@@ -1653,9 +1653,15 @@ function createPkcePair() {
 function normalizeListing(listing = {}) {
   const primaryImage = listing.Images?.[0] || listing.images?.[0] || listing.image || {};
   const image = listing.image_url
+    || listing.thumbnail_url
+    || listing.url_fullxfull
+    || listing.url_570xN
+    || listing.url_340x270
+    || listing.url_170x135
     || (typeof listing.image === "string" ? listing.image : "")
     || primaryImage.url_fullxfull
     || primaryImage.url_570xN
+    || primaryImage.url_340x270
     || primaryImage.url_75x75
     || primaryImage.url_170x135
     || primaryImage.url
@@ -1670,6 +1676,7 @@ function normalizeListing(listing = {}) {
     description: listing.description || "",
     tags,
     image_url: image,
+    thumbnail_url: image,
     listing_id: String(listing.listing_id || listing.id || ""),
     source_url: listing.source_url || listing.url || (listing.listing_id ? `https://www.etsy.com/listing/${listing.listing_id}` : ""),
     views: Number(listing.views || listing.views_count || 0),
@@ -1908,65 +1915,39 @@ function extractEtsyResults(payload) {
 function imageUrlFromImages(images = []) {
   const firstImage = Array.isArray(images) ? images[0] : null;
   if (!firstImage) return "";
-  return firstImage.url_570xN || firstImage.url_fullxfull || firstImage.url_170x135 || firstImage.url_75x75 || firstImage.url || "";
-}
-
-async function fetchEtsyListingImages(listingId = "", tokens = {}, context = {}) {
-  const normalizedId = normalizeListingId(listingId);
-  if (!normalizedId) return [];
-  try {
-    const payload = await etsyApi(`/listings/${encodeURIComponent(normalizedId)}/images`, tokens, context);
-    return extractEtsyResults(payload);
-  } catch (error) {
-    etsyDebug("Etsy listing images fetch failed", {
-      listing_id: normalizedId,
-      status: error?.status || "",
-      message: error instanceof Error ? error.message : String(error)
-    });
-    return [];
-  }
+  return firstImage.url_570xN || firstImage.url_fullxfull || firstImage.url_340x270 || firstImage.url_170x135 || firstImage.url_75x75 || firstImage.url || "";
 }
 
 async function fetchActiveEtsyListingsWithImages(tokens = {}, context = {}) {
-  const shopId = encodeURIComponent(tokens.shop_id);
-  const includeVariants = [
-    `/shops/${shopId}/listings/active?includes=Images&limit=100`,
-    `/shops/${shopId}/listings/active?includes[]=Images&limit=100`,
-    `/shops/${shopId}/listings/active?limit=100&includes=Images`
-  ];
-  let payload = null;
-  let rawListings = [];
-  for (const pathname of includeVariants) {
-    payload = await etsyApi(pathname, tokens, context);
-    rawListings = extractEtsyResults(payload);
-    const firstListing = rawListings[0] || {};
-    const hasImages = Boolean((firstListing.images || firstListing.Images)?.length);
-    console.log("[LISTING IMAGE DEBUG]", {
-      listing_id: firstListing.listing_id,
-      has_images: Boolean(firstListing.images || firstListing.Images),
-      images_length: (firstListing.images || firstListing.Images)?.length,
-      first_image: (firstListing.images || firstListing.Images)?.[0],
-      image_url_set: Boolean(firstListing.image_url),
-      include_variant: pathname
+  tokens = await ensureValidEtsyToken(tokens, context.res, context.req);
+  const endpoint = `${ETSY_API_BASE}/shops/${encodeURIComponent(tokens.shop_id)}/listings/active?limit=100&includes=Images`;
+  const response = await fetch(endpoint, {
+    headers: etsyApiHeaders(tokens.access_token)
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) {
+    etsyDebug("Etsy listings API failed", {
+      status: response.status,
+      headers: Object.fromEntries(response.headers.entries()),
+      body: payload,
+      shop_id: tokens.shop_id || "",
+      user_id: tokens.user_id || ""
     });
-    if (hasImages) break;
+    const error = new Error(payload.error || payload.message || `Etsy API failed with ${response.status}`);
+    error.status = response.status;
+    error.payload = payload;
+    throw error;
   }
-  const imageEntries = await Promise.all(rawListings.slice(0, 20).map(async (listing) => {
-    const listingId = normalizeListingId(listing.listing_id || listing.id);
-    const images = (listing.images || listing.Images || []);
-    const fetchedImages = images.length ? images : await fetchEtsyListingImages(listingId, tokens, context);
-    const imageUrl = imageUrlFromImages(fetchedImages);
-    console.log("[IMAGE FETCH RESULT]", { listing_id: listingId, image_url: imageUrl });
-    return [listingId, { images: fetchedImages, image_url: imageUrl }];
-  }));
-  const imageByListingId = new Map(imageEntries);
+  const rawListings = extractEtsyResults(payload);
+  console.log("[RAW FIRST LISTING]", JSON.stringify(rawListings[0] || {}).slice(0, 1000));
   return rawListings.map((listing) => {
-    const listingId = normalizeListingId(listing.listing_id || listing.id);
-    const imageData = imageByListingId.get(listingId) || {};
+    const images = listing.images || listing.Images || [];
+    const imageUrl = listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
     return {
       ...listing,
-      images: imageData.images || listing.images || listing.Images || [],
-      image_url: imageData.image_url || listing.image_url || imageUrlFromImages(listing.images || listing.Images || [])
+      images,
+      image_url: imageUrl,
+      thumbnail_url: imageUrl
     };
   });
 }
