@@ -948,22 +948,29 @@ async function activateEtsyConnectToken() {
 }
 
 function productSelectionId(product = {}, index = 0) {
-  return String(product.listing_id || product.id || product.name || product.title || index);
+  return String(product.listing_id || "");
 }
 
 function pruneSelectedListings() {
-  const liveIds = new Set(products.map((product, index) => productSelectionId(product, index)));
+  const liveIds = liveListingIds();
+  console.log("[HYDRATE SELECTED IDS]", [...selectedListingIds]);
   [...selectedListingIds].forEach((id) => {
-    if (!liveIds.has(id)) selectedListingIds.delete(id);
+    if (!liveIds.has(id)) {
+      console.log("[SELECTION BLOCKED STALE ID]", { listing_id: id });
+      selectedListingIds.delete(id);
+    }
   });
+  console.log("[SELECTION CLEANUP COMPLETE]", [...selectedListingIds]);
 }
 
 function liveListingIds() {
-  return new Set(
+  const ids = new Set(
     products
       .filter((product) => String(product.sync_source || "").toLowerCase() === "etsy_api" && /^\d+$/.test(String(product.listing_id || "")) && !BLOCKED_STALE_LISTING_IDS.has(String(product.listing_id || "")))
       .map((product) => String(product.listing_id))
   );
+  console.log("[LIVE LISTING IDS REBUILT]", [...ids]);
+  return ids;
 }
 
 function renderedLiveListingIds() {
@@ -1076,22 +1083,30 @@ async function hardResetStaleQueue() {
 function selectedProducts() {
   if (!selectedListingIds.size) {
     document.querySelectorAll("[data-product-id]:checked").forEach((checkbox) => {
-      if (checkbox.dataset.productId) selectedListingIds.add(String(checkbox.dataset.productId));
+      const productId = String(checkbox.dataset.productId || "");
+      if (liveListingIds().has(productId)) selectedListingIds.add(productId);
+      else if (productId) console.log("[SELECTION BLOCKED STALE ID]", { listing_id: productId });
     });
   }
-  return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)));
+  pruneSelectedListings();
+  return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)) && liveListingIds().has(String(product.listing_id || "")));
 }
 
 function rebuildSelectedListingIdsFromDom() {
+  const liveIds = liveListingIds();
   const rebuiltIds = [...document.querySelectorAll('input[type="checkbox"]:checked')]
     .map((checkbox) => checkbox.dataset.productId || checkbox.closest(".product-card")?.querySelector("[data-product-id]")?.dataset.productId || "")
     .filter(Boolean)
-    .map(String);
+    .map(String)
+    .filter((id) => {
+      const keep = liveIds.has(id);
+      if (!keep) console.log("[SELECTION BLOCKED STALE ID]", { listing_id: id });
+      return keep;
+    });
   console.log("REBUILT IDS", rebuiltIds);
-  if (rebuiltIds.length) {
-    selectedListingIds.clear();
-    rebuiltIds.forEach((id) => selectedListingIds.add(id));
-  }
+  selectedListingIds.clear();
+  rebuiltIds.forEach((id) => selectedListingIds.add(id));
+  console.log("[SELECTION CLEANUP COMPLETE]", [...selectedListingIds]);
   return rebuiltIds;
 }
 
@@ -1592,7 +1607,13 @@ function focusOptimizationStudio() {
 }
 
 function selectStudioProduct(product = null, message = "", options = {}) {
-  studioListingId = product ? String(product.listing_id || "") : "";
+  const listingId = product ? String(product.listing_id || "") : "";
+  if (product && !liveListingIds().has(listingId)) {
+    console.log("[SELECTION BLOCKED STALE ID]", { listing_id: listingId, source: "studio" });
+    renderOptimizationStudio(null, "Refresh Etsy listings before selecting this item.");
+    return;
+  }
+  studioListingId = listingId;
   renderOptimizationStudio(product, message);
   if (product && options.scroll === true) focusOptimizationStudio();
 }
@@ -2262,6 +2283,9 @@ async function refreshListings() {
     etsyConnectionRequired = false;
     etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
+    const liveIdsAfterLoad = liveListingIds();
+    selectedListingIds.clear();
+    console.log("[SELECTION CLEANUP COMPLETE]", [...selectedListingIds], { live_count: liveIdsAfterLoad.size });
     optimizationRecords = [];
     queueRecords = [];
     seenOptimizationIds.clear();
@@ -2390,8 +2414,15 @@ async function sendBatch(productsToSend) {
   sendBatchBtn.textContent = "Sending...";
   try {
     const liveIds = renderedLiveListingIds();
+    console.log("[SEND PRECHECK LIVE IDS]", [...liveIds]);
     console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
     pruneStaleOptimizationState("before_send", liveIds);
+    [...selectedListingIds].forEach((id) => {
+      if (!liveIds.has(String(id))) {
+        console.log("[SEND PRECHECK REMOVED STALE]", { listing_id: String(id) });
+        selectedListingIds.delete(id);
+      }
+    });
     productsToSend = productsToSend.filter((listing) => {
       const id = String(listing.listing_id || "");
       const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
@@ -2858,6 +2889,13 @@ productsEl?.addEventListener("change", (event) => {
   if (!checkbox) return;
   const productId = String(checkbox.dataset.productId || "");
   if (!productId) return;
+  if (!liveListingIds().has(productId)) {
+    console.log("[SELECTION BLOCKED STALE ID]", { listing_id: productId, source: "toggle" });
+    checkbox.checked = false;
+    selectedListingIds.delete(productId);
+    showToast("Refresh listings and regenerate optimization", "error");
+    return;
+  }
   if (checkbox.checked) {
     selectedListingIds.add(productId);
   } else {
