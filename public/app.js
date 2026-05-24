@@ -9,6 +9,10 @@ let etsySellerAccountRequired = false;
 const selectedListingIds = new Set();
 const listingOptimizationDebug = new Map();
 const pendingOptimizationByListing = new Map();
+const listingImageRequestCache = new Map();
+let activeListingFilter = "all";
+let listingSearchQuery = "";
+let studioListingId = "";
 const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
@@ -80,9 +84,16 @@ const etsyConnectBannerEl = document.querySelector("#etsyConnectBanner");
 const connectEtsyBtn = document.querySelector("#connectEtsy");
 const syncEtsyListingsBtn = document.querySelector("#syncEtsyListings");
 const disconnectEtsyBtn = document.querySelector("#disconnectEtsy");
+let quickAnalyzerFormEl = null;
+let quickAnalyzerInputEl = null;
+let listingSearchInputEl = null;
+let listingFilterBarEl = null;
+let storeHealthEl = null;
+let optimizationStudioEl = null;
+let quickAnalyzerResultEl = null;
 if (sendBatchBtn) {
-  sendBatchBtn.title = "Direct Etsy update coming soon - use Copy button for now";
-  sendBatchBtn.setAttribute("aria-label", "Send Selected Batch. Direct Etsy update coming soon - use Copy button for now");
+  sendBatchBtn.title = "Send optimized selected listings to Etsy";
+  sendBatchBtn.setAttribute("aria-label", "Send optimized selected listings to Etsy");
 }
 const seenOptimizationIds = new Set();
 const rewriteModesByRecord = new Map();
@@ -170,6 +181,11 @@ function safeStatusClass(value = "") {
   return String(value).replace(/[^a-z0-9_-]/gi, "");
 }
 
+function safeCssString(value = "") {
+  if (window.CSS?.escape) return CSS.escape(String(value));
+  return String(value).replace(/["\\]/g, "\\$&");
+}
+
 function confidenceClass(label = "") {
   const normalized = String(label).toLowerCase();
   if (normalized.includes("elite")) return "confidence-elite";
@@ -178,6 +194,40 @@ function confidenceClass(label = "") {
   if (normalized.includes("moderate")) return "confidence-moderate";
   if (normalized.includes("weak")) return "confidence-weak";
   return "";
+}
+
+function extractListingId(value = "") {
+  const text = String(value || "").trim();
+  const match = text.match(/(?:listing\/|listing-editor\/edit\/|^)(\d{6,})/i) || text.match(/\b(\d{6,})\b/);
+  return match ? match[1] : "";
+}
+
+function optimizationForListing(listingId = "") {
+  return optimizationRecords.find((record) => String(record.listing_id || "") === String(listingId || "") && recordOutputValid(record)) || null;
+}
+
+function analysisForProduct(product = {}) {
+  return analyzeListing(product, optimizationForListing(product.listing_id));
+}
+
+function filteredProducts() {
+  const query = listingSearchQuery.trim().toLowerCase();
+  const filtered = products.filter((product) => {
+    const listingId = String(product.listing_id || "");
+    if (BLOCKED_STALE_LISTING_IDS.has(listingId)) return false;
+    const optimization = optimizationForListing(listingId);
+    const analysis = analyzeListing(product, optimization);
+    const haystack = `${product.title || ""} ${product.name || ""} ${listingId} ${(product.tags || []).join(" ")}`.toLowerCase();
+    if (query && !haystack.includes(query)) return false;
+    if (activeListingFilter === "unoptimized") return !optimization;
+    if (activeListingFilter === "low-seo") return (analysis.seo || 0) < 70;
+    if (activeListingFilter === "low-ctr") return (analysis.ctr || 0) < 70;
+    if (activeListingFilter === "needs-thumbnail") return (analysis.thumbnail || 0) < 75;
+    if (activeListingFilter === "queued") return queueRecords.some((item) => String(item.listing_id || "") === listingId);
+    return true;
+  });
+  console.log("[FILTER APPLIED]", { filter: activeListingFilter, query: listingSearchQuery, count: filtered.length });
+  return filtered;
 }
 
 function unwrapResponse(payload, fallback = payload) {
@@ -507,6 +557,15 @@ function imageOrPlaceholder(src, classes = "", attrs = "") {
   return `<img class="${safeClasses}" src="${escapeAttribute(src)}" alt="" ${attrs} style="width:100%;height:100%;object-fit:cover;border-radius:inherit;display:block;" data-placeholder-class="${safeClasses}" onerror="this.replaceWith(createLuxuryPlaceholder(this.dataset.placeholderClass || ''))" />`;
 }
 
+function placeholderImageSrc() {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160"><rect width="160" height="160" rx="18" fill="#15120f"/><text x="80" y="78" fill="#d7bd82" font-family="Arial, sans-serif" font-size="17" font-weight="700" text-anchor="middle">ACOPES</text><text x="80" y="100" fill="#d7bd82" font-family="Arial, sans-serif" font-size="15" font-weight="700" text-anchor="middle">AI</text></svg>`;
+  return `data:image/svg+xml;charset=UTF-8,${encodeURIComponent(svg)}`;
+}
+
+function fallbackImageMarkup(classes = "") {
+  return `<span class="luxury-placeholder ${escapeAttribute(classes)}"><i>ACOPES AI</i></span>`;
+}
+
 window.createLuxuryPlaceholder = function createLuxuryPlaceholder(classes = "") {
   const placeholder = document.createElement("span");
   placeholder.className = `luxury-placeholder ${classes}`.trim();
@@ -532,6 +591,67 @@ function showToast(message, type = "success") {
     window.setTimeout(() => toast.remove(), 220);
   }, 3600);
 }
+
+function mountV2UxShell() {
+  if (document.querySelector("#quickAnalyzerForm")) return;
+  const hero = document.querySelector(".hero");
+  const kpiStrip = document.querySelector(".kpi-strip");
+  const productsPanel = productsEl?.closest(".panel");
+  const sideStack = document.querySelector(".side-stack");
+  hero?.insertAdjacentHTML("afterend", `
+    <section class="panel quick-analyzer-panel">
+      <div>
+        <p class="eyebrow">Quick Analyzer</p>
+        <h2>Optimize Any Etsy Listing</h2>
+      </div>
+      <form id="quickAnalyzerForm" class="quick-analyzer-form">
+        <input id="quickAnalyzerInput" placeholder="Paste Etsy listing URL or listing ID" />
+        <button type="submit">Analyze Now</button>
+      </form>
+      <p id="quickAnalyzerMessage" class="quick-analyzer-message"></p>
+      <div id="quickAnalyzerResult" class="quick-analyzer-result" hidden></div>
+    </section>
+  `);
+  kpiStrip?.insertAdjacentHTML("afterend", `
+    <section class="panel store-health-card" id="storeHealthCard">
+      <div><p class="eyebrow">Store Health</p><h2>Store Health: --/100</h2></div>
+      <ul><li>Thumbnail quality</li><li>Tag coverage</li><li>Mobile title readability</li></ul>
+    </section>
+  `);
+  productsPanel?.querySelector(".section-head")?.insertAdjacentHTML("afterend", `
+    <div class="listing-toolbar">
+      <input id="listingSearchInput" placeholder="Search listings by title, ID, tag..." />
+      <div id="listingFilterBar" class="filter-chips">
+        <button class="selected" data-listing-filter="all">All</button>
+        <button data-listing-filter="unoptimized">Unoptimized</button>
+        <button data-listing-filter="low-seo">Low SEO</button>
+        <button data-listing-filter="low-ctr">Low CTR</button>
+        <button data-listing-filter="needs-thumbnail">Needs Thumbnail</button>
+        <button data-listing-filter="queued">Queued</button>
+      </div>
+    </div>
+  `);
+  sideStack?.insertAdjacentHTML("afterbegin", `
+    <section class="panel optimization-studio sticky-panel" id="optimizationStudio">
+      <div class="section-head compact"><div><p class="eyebrow">AI Studio</p><h2>AI Optimization Studio</h2></div></div>
+      <div class="studio-empty">
+        <span class="studio-empty-icon">AI</span>
+        <h3>Start optimizing</h3>
+        <p>Paste an Etsy URL or click Optimize Now on any product.</p>
+        <ol><li>Paste URL</li><li>Review AI suggestions</li><li>Optimize draft safely</li></ol>
+      </div>
+    </section>
+  `);
+  quickAnalyzerFormEl = document.querySelector("#quickAnalyzerForm");
+  quickAnalyzerInputEl = document.querySelector("#quickAnalyzerInput");
+  listingSearchInputEl = document.querySelector("#listingSearchInput");
+  listingFilterBarEl = document.querySelector("#listingFilterBar");
+  storeHealthEl = document.querySelector("#storeHealthCard");
+  optimizationStudioEl = document.querySelector("#optimizationStudio");
+  quickAnalyzerResultEl = document.querySelector("#quickAnalyzerResult");
+}
+
+mountV2UxShell();
 
 function renderProductsSkeleton(count = 3) {
   productsEl.innerHTML = Array.from({ length: count }, () => `
@@ -787,20 +907,48 @@ function liveListingIds() {
   );
 }
 
+function renderedLiveListingIds() {
+  const renderedIds = new Set(
+    [...document.querySelectorAll(".product-card [data-product-id]")]
+      .map((input) => String(input.dataset.productId || ""))
+      .filter(Boolean)
+  );
+  return renderedIds.size ? renderedIds : liveListingIds();
+}
+
 function selectedLiveProducts() {
-  const liveIds = liveListingIds();
+  const liveIds = renderedLiveListingIds();
   return selectedProducts().filter((product) => liveIds.has(String(product.listing_id || "")));
 }
 
-function pruneStaleOptimizationState() {
-  const liveIds = liveListingIds();
-  optimizationRecords = optimizationRecords.filter((record) => liveIds.has(String(record.listing_id || "")));
-  queueRecords = queueRecords.filter((item) => liveIds.has(String(item.listing_id || "")));
+function pruneStaleOptimizationState(source = "state", ids = liveListingIds()) {
+  const liveIds = ids instanceof Set ? ids : new Set(ids);
+  optimizationRecords = optimizationRecords.filter((record) => {
+    const id = String(record.listing_id || "");
+    const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
+    if (!keep) console.log("[FRONTEND STALE OPTIMIZATION REMOVED]", { source, listing_id: id || "missing" });
+    return keep;
+  });
+  queueRecords = queueRecords.filter((item) => {
+    const id = String(item.listing_id || "");
+    const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
+    if (!keep) console.log("[FRONTEND STALE OPTIMIZATION REMOVED]", { source: `${source}:queue`, listing_id: id || "missing" });
+    return keep;
+  });
   [...pendingOptimizationByListing.keys()].forEach((listingId) => {
-    if (!liveIds.has(String(listingId))) pendingOptimizationByListing.delete(listingId);
+    if (!liveIds.has(String(listingId))) {
+      console.log("[FRONTEND STALE OPTIMIZATION REMOVED]", { source: `${source}:pending`, listing_id: String(listingId) });
+      pendingOptimizationByListing.delete(listingId);
+    }
   });
   [...listingOptimizationDebug.keys()].forEach((listingId) => {
     if (!liveIds.has(String(listingId))) listingOptimizationDebug.delete(listingId);
+  });
+  [...selectedListingIds].forEach((id) => {
+    if (!liveIds.has(String(id))) {
+      console.log("[FRONTEND SEND BLOCKED STALE ID]", { source: `${source}:selection`, listing_id: String(id) });
+      selectedListingIds.delete(id);
+    }
   });
 }
 
@@ -930,18 +1078,6 @@ function optimizedFieldPayload(listingId = "") {
   };
 }
 
-function optimizedClipboardPayload(listingId = "") {
-  const { title, tags, description } = optimizedFieldPayload(listingId);
-  if (!title && !tags.length && !description) return "";
-  return [
-    `TITLE: ${title}`,
-    "",
-    `TAGS: ${tags.join(", ")}`,
-    "",
-    `DESCRIPTION: ${description}`
-  ].join("\n");
-}
-
 async function writeClipboardText(text = "", successMessage = "Copied! Paste directly into Etsy") {
   if (!text) {
     showToast("Generate an optimization before copying.", "error");
@@ -971,18 +1107,20 @@ async function writeClipboardText(text = "", successMessage = "Copied! Paste dir
 async function copyOptimizedField(listingId = "", field = "") {
   const payload = optimizedFieldPayload(listingId);
   if (field === "title") {
-    await writeClipboardText(payload.title, "Title copied!");
+    console.log("[COPY TITLE]", { listingId });
+    await writeClipboardText(payload.title, "Title copied");
     return;
   }
   if (field === "tags") {
-    await writeClipboardText(payload.tags.join(", "), "Tags copied!");
+    console.log("[COPY TAGS]", { listingId });
+    await writeClipboardText(payload.tags.length ? payload.tags.join(", ") : "Tags not generated yet.", "Tags copied");
     return;
   }
   if (field === "description") {
-    await writeClipboardText(payload.description, "Description copied!");
+    console.log("[COPY DESCRIPTION]", { listingId });
+    await writeClipboardText(payload.description || "SEO description not generated yet.", "Description copied");
     return;
   }
-  await writeClipboardText(optimizedClipboardPayload(listingId));
 }
 
 function openEtsyListingEditor(listingId = "") {
@@ -1314,6 +1452,159 @@ function requireSelectedProducts() {
   return selected;
 }
 
+function renderStoreHealth() {
+  if (!storeHealthEl) return;
+  const analyses = products.map((product) => analysisForProduct(product));
+  const average = (key, fallback = 62) => analyses.length ? analyses.reduce((sum, item) => sum + (item[key] || 0), 0) / analyses.length : fallback;
+  const optimizedPercent = products.length ? (optimizationRecords.length / products.length) * 100 : 20;
+  const score = clampScore((average("seo") * 0.32) + (average("ctr") * 0.32) + (average("thumbnail") * 0.24) + (optimizedPercent * 0.12));
+  const attention = [
+    average("thumbnail") < 78 ? "Thumbnail quality" : "",
+    average("tagRelevance") < 78 ? "Tag coverage" : "",
+    average("mobile") < 78 ? "Mobile title readability" : ""
+  ].filter(Boolean);
+  storeHealthEl.innerHTML = `
+    <div><p class="eyebrow">Store Health</p><h2>Store Health: ${score}/100</h2></div>
+    <div class="store-health-meter"><i style="width:${score}%"></i></div>
+    <p>Needs attention:</p>
+    <ul>${(attention.length ? attention : ["Keep monitoring thumbnails", "Protect title clarity", "Refresh weak tags"]).map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+  `;
+}
+
+function renderOptimizationStudio(product = null, message = "") {
+  if (!optimizationStudioEl) return;
+  if (!product) {
+    optimizationStudioEl.innerHTML = `
+      <div class="section-head compact"><div><p class="eyebrow">AI Studio</p><h2>AI Optimization Studio</h2></div></div>
+      <div class="studio-empty">
+        <span class="studio-empty-icon">AI</span>
+        <h3>Start optimizing</h3>
+        <p>${escapeHtml(message || "Paste an Etsy URL or click Optimize Now on any product.")}</p>
+        <ol><li>Paste URL</li><li>Review AI suggestions</li><li>Optimize draft safely</li></ol>
+      </div>
+    `;
+    return;
+  }
+  const listingId = String(product.listing_id || "");
+  const optimization = optimizationForListing(listingId);
+  const after = optimization?.after || {};
+  const analysis = analyzeListing(product, optimization);
+  const optimizedTitle = optimizedTitleFrom(after, product);
+  console.log("[STUDIO PRODUCT SELECTED]", { listingId });
+  optimizationStudioEl.innerHTML = `
+    <div class="section-head compact"><div><p class="eyebrow">AI Studio</p><h2>AI Optimization Studio</h2></div></div>
+    <div class="studio-product">
+      <div class="studio-thumb">
+        <img class="listing-image lazy-listing-image" data-listing-id="${escapeAttribute(listingId)}" src="${escapeAttribute(placeholderImageSrc())}" alt="${escapeAttribute(product.title || product.name || "Etsy listing")}" />
+      </div>
+      <strong>${escapeHtml(product.title || product.name || `Listing ${listingId}`)}</strong>
+      <small>Listing ID ${escapeHtml(listingId)}</small>
+    </div>
+    <div class="studio-metrics">
+      <span>SEO ${escapeHtml(analysis.seo)}</span>
+      <span>CTR ${escapeHtml(analysis.ctr)}</span>
+      <span>Thumbnail ${escapeHtml(analysis.thumbnail)}</span>
+    </div>
+    <div class="optimization-actions studio-actions">
+      <button data-studio-optimize="${escapeAttribute(listingId)}">Optimize Now</button>
+      <button class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(listingId)}">Copy Title</button>
+      <button class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(listingId)}">Copy Description</button>
+      <button class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(listingId)}">Copy Tags</button>
+      <button class="ghost" data-open-etsy="${escapeAttribute(listingId)}">Open in Etsy</button>
+    </div>
+    <div class="studio-compare">
+      <div><small>Before title</small><p>${escapeHtml(product.title || "")}</p></div>
+      <div><small>Optimized title</small><p>${escapeHtml(optimizedTitle || "Waiting for optimization")}</p></div>
+    </div>
+    <div class="recommendation-stack">
+      <article><strong>Title improvement</strong><p>Keep the product type and strongest buyer keyword in the first 40 characters.</p></article>
+      <article><strong>Tag replacement suggestions</strong><p>Use material, style, gift, and occasion phrases without duplicate stems.</p></article>
+      <article><strong>Thumbnail improvement hints</strong><p>Use a tight crop, soft neutral background, and high mobile contrast.</p></article>
+    </div>
+  `;
+  setupLazyListingImages();
+}
+
+function focusOptimizationStudio() {
+  if (!optimizationStudioEl) return;
+  optimizationStudioEl.classList.add("studio-focused");
+  optimizationStudioEl.scrollIntoView({ behavior: "smooth", block: "start" });
+  window.setTimeout(() => optimizationStudioEl.classList.remove("studio-focused"), 1600);
+}
+
+function selectStudioProduct(product = null, message = "", options = {}) {
+  studioListingId = product ? String(product.listing_id || "") : "";
+  renderOptimizationStudio(product, message);
+  if (product && options.scroll === true) focusOptimizationStudio();
+}
+
+function renderQuickAnalyzerResult(product = {}, imageUrl = "", message = "") {
+  if (!quickAnalyzerResultEl) return;
+  const listingId = String(product.listing_id || "");
+  const optimization = optimizationForListing(listingId);
+  const analysis = analyzeListing(product, optimization);
+  quickAnalyzerResultEl.hidden = false;
+  quickAnalyzerResultEl.innerHTML = `
+    <article class="quick-result-card">
+      <div class="quick-result-image">
+        ${imageUrl ? `<img src="${escapeAttribute(imageUrl)}" alt="${escapeAttribute(product.title || product.name || "Etsy listing")}" />` : fallbackImageMarkup()}
+      </div>
+      <div>
+        <strong>${escapeHtml(product.title || product.name || `Listing ${listingId}`)}</strong>
+        <small>Listing ID ${escapeHtml(listingId)}</small>
+        ${message ? `<p>${escapeHtml(message)}</p>` : ""}
+        <div class="studio-metrics">
+          <span>SEO ${escapeHtml(analysis.seo)}</span>
+          <span>CTR ${escapeHtml(analysis.ctr)}</span>
+          <span>Thumbnail ${escapeHtml(analysis.thumbnail)}</span>
+        </div>
+        <div class="optimization-actions inline-actions">
+          <button type="button" data-optimize-now="${escapeAttribute(listingId)}">Optimize Now</button>
+          <button type="button" class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(listingId)}">Copy Title</button>
+          <button type="button" class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(listingId)}">Copy Description</button>
+          <button type="button" class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(listingId)}">Copy Tags</button>
+          <button type="button" class="ghost" data-open-etsy="${escapeAttribute(listingId)}">Open in Etsy</button>
+        </div>
+        <div class="quick-optimization-inline" data-quick-optimization="${escapeAttribute(listingId)}"></div>
+      </div>
+    </article>
+  `;
+  console.log("[QUICK RESULT RENDERED]", { listingId });
+}
+
+function updateQuickOptimizationArea(product = {}, state = {}) {
+  const listingId = String(product.listing_id || "");
+  const area = quickAnalyzerResultEl?.querySelector(`[data-quick-optimization="${safeCssString(listingId)}"]`);
+  if (!area) return;
+  if (state.status) {
+    area.innerHTML = `<p class="quick-inline-status">${escapeHtml(state.status)}</p>`;
+    return;
+  }
+  const optimization = optimizationForListing(listingId);
+  const after = optimization?.after || {};
+  const title = optimizedTitleFrom(after, product);
+  const tags = optimizedTagsFrom(after);
+  const description = optimizedDescriptionFrom(after) || product.optimized_description || "";
+  const scores = optimization?.scores || analyzeListing(product, optimization);
+  area.innerHTML = `
+    <div class="quick-inline-result">
+      <small>Optimized Title</small>
+      <strong>${escapeHtml(title || "Waiting for optimization")}</strong>
+      <small>SEO Description</small>
+      <p>${escapeHtml(description || "SEO description not generated yet.")}</p>
+      <small>Suggested Tags</small>
+      <p>${escapeList(tags.length ? tags : product.tags || [])}</p>
+      <small>Thumbnail Recommendation</small>
+      <p>Use a tighter crop, soft neutral background, and clear mobile contrast.</p>
+      <div class="studio-metrics">
+        <span>SEO ${escapeHtml(scores.seo_score ?? scores.seo ?? "--")}</span>
+        <span>CTR ${escapeHtml(scores.ctr_score ?? scores.ctr ?? "--")}</span>
+        <span>Confidence ${escapeHtml(scores.confidence_score ?? "--")}</span>
+      </div>
+    </div>
+  `;
+}
+
 function renderProducts() {
   if (etsySellerAccountRequired) {
     productsEl.innerHTML = `
@@ -1341,9 +1632,16 @@ function renderProducts() {
   }
 
   const latestByListing = new Map(optimizationRecords.filter(recordOutputValid).map((record) => [String(record.listing_id), record]));
-  productsEl.innerHTML = products
-    .map((product, index) => {
+  const visibleProducts = filteredProducts();
+  if (!visibleProducts.length) {
+    productsEl.innerHTML = `<div class="empty">No listings match the current search or filter.</div>`;
+    setupLazyListingImages();
+    return;
+  }
+  productsEl.innerHTML = visibleProducts
+    .map((product) => {
       if (String(product.listing_id) === "4384247178") return "";
+      const index = products.findIndex((item) => String(item.listing_id || "") === String(product.listing_id || ""));
       const selectionId = productSelectionId(product, index);
       const optimization = latestByListing.get(String(product.listing_id));
       const debugInfo = listingOptimizationDebug.get(String(product.listing_id));
@@ -1354,13 +1652,12 @@ function renderProducts() {
       const optimizedDescription = optimizedDescriptionFrom(displayAfter);
       const optimizedTags = optimizedTagsFrom(displayAfter);
       const outputSource = optimization?.final_output_source || displayAfter?.final_output_source || "";
-      const listingImage = product.image_url || product.thumbnail_url || "";
-      console.log("[CARD RENDER IMAGE]", product.listing_id, listingImage);
+      const listingId = String(product.listing_id || "");
+      console.log("[CARD RENDER IMAGE]", listingId, product.image_url || product.thumbnail_url || "");
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
-      const previewAttr = listingImage ? `data-preview="${escapeAttribute(listingImage)}"` : "";
-      const thumbnailHtml = listingImage
-        ? `<img src="${escapeAttribute(listingImage)}" alt="" ${previewAttr} style="width:100%;height:100%;object-fit:cover;border-radius:12px;display:block;" onerror="this.parentElement.innerHTML='ACOPES AI'" />`
-        : `<span class="luxury-placeholder"><i>ACOPES AI</i></span>`;
+      const thumbnailHtml = listingId
+        ? `<img class="listing-image lazy-listing-image" data-listing-id="${escapeAttribute(listingId)}" src="${escapeAttribute(placeholderImageSrc())}" alt="${escapeAttribute(product.title || product.name || "Etsy listing")}" style="width:100%;height:100%;object-fit:cover;border-radius:12px;display:block;position:relative;z-index:2;" onerror="this.parentElement.innerHTML='ACOPES AI'" />`
+        : fallbackImageMarkup();
       return `
         <label class="product-card ${animated}">
           <input type="checkbox" data-product-index="${index}" data-product-id="${escapeAttribute(selectionId)}" ${selectedListingIds.has(selectionId) ? "checked" : ""} />
@@ -1383,6 +1680,7 @@ function renderProducts() {
                 <p>${escapeHtml(optimizedDescription)}</p>
                 <small>${escapeList(optimizedTags)}</small>
                 <div class="optimization-actions inline-actions">
+                  <button type="button" data-optimize-now="${escapeAttribute(product.listing_id)}">Optimize Now</button>
                   <button type="button" class="ghost" data-copy-field="title" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Title</button>
                   <button type="button" class="ghost" data-copy-field="tags" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Tags</button>
                   <button type="button" class="ghost" data-copy-field="description" data-copy-listing="${escapeAttribute(product.listing_id)}">Copy Description</button>
@@ -1404,6 +1702,9 @@ function renderProducts() {
                 <span>Thumb ${escapeHtml(optimization?.scores?.thumbnail_score ?? "--")}</span>
                 <span class="${confidenceClass(optimization?.confidence_label)}">Confidence ${escapeHtml(optimization?.scores?.confidence_score ?? "--")} ${escapeHtml(optimization?.confidence_label || "")}</span>
               </div>
+            <div class="optimization-actions inline-actions card-primary-actions">
+              <button type="button" data-optimize-now="${escapeAttribute(product.listing_id)}">Optimize Now</button>
+            </div>
             ${renderListingAnalysis(product, optimization)}
             ${renderRecommendationCards(product, optimization)}
             ${(() => {
@@ -1434,7 +1735,78 @@ function renderProducts() {
       `;
     })
     .join("");
+  pruneStaleOptimizationState("renderProducts", renderedLiveListingIds());
   optimizationRecords.forEach((record) => seenOptimizationIds.add(record.id));
+  setupLazyListingImages();
+  renderStoreHealth();
+  if (studioListingId) renderOptimizationStudio(liveListingById(studioListingId) || products.find((product) => String(product.listing_id || "") === studioListingId) || null);
+}
+
+function loadListingImage(listingId = "") {
+  const normalizedId = String(listingId || "").trim();
+  if (!normalizedId) return Promise.resolve({ image_url: "" });
+  if (!listingImageRequestCache.has(normalizedId)) {
+    console.log("[LAZY IMAGE FETCH]", normalizedId);
+    const request = fetch(`/api/listing/${encodeURIComponent(normalizedId)}/image`)
+      .then((response) => response.json())
+      .then((data) => {
+        if (!data?.ok) throw new Error(data?.error || "listing_image_failed");
+        return data;
+      });
+    listingImageRequestCache.set(normalizedId, request);
+  }
+  return listingImageRequestCache.get(normalizedId);
+}
+
+function setupLazyListingImages() {
+  const images = [...document.querySelectorAll(".lazy-listing-image")].filter((image) => image.dataset.imageLoaded !== "true");
+  console.log("[LAZY IMAGE OBSERVER READY]", images.length);
+  if (!images.length) return;
+  const applyImage = async (image) => {
+    if (image.dataset.imageLoaded === "true") return;
+    const listingId = image.dataset.listingId || "";
+    console.log("[LAZY IMAGE TARGET]", { listingId, img: image });
+    image.dataset.imageLoaded = "true";
+    try {
+      const data = await loadListingImage(listingId);
+      const imageUrl = data?.image_url || "";
+      if (imageUrl) {
+        const parent = image.closest(".thumb-wrap") || image.parentElement;
+        image.src = imageUrl;
+        image.dataset.preview = imageUrl;
+        image.classList.add("image-loaded");
+        image.style.width = "100%";
+        image.style.height = "100%";
+        image.style.objectFit = "cover";
+        image.style.borderRadius = "12px";
+        image.style.display = "block";
+        image.style.opacity = "1";
+        if (parent) {
+          parent.classList.add("image-loaded");
+          parent.style.backgroundImage = "none";
+        }
+        console.log("[LAZY IMAGE SRC SET]", { listingId, src: image.src });
+      }
+      console.log("[LAZY IMAGE APPLIED]", { listingId, imageUrl });
+    } catch (error) {
+      console.warn("[LAZY IMAGE FAILED]", {
+        listingId,
+        error: error instanceof Error ? error.message : String(error)
+      });
+    }
+  };
+  if (!("IntersectionObserver" in window)) {
+    images.forEach((image) => applyImage(image));
+    return;
+  }
+  const observer = new IntersectionObserver((entries) => {
+    entries.forEach((entry) => {
+      if (!entry.isIntersecting) return;
+      observer.unobserve(entry.target);
+      applyImage(entry.target);
+    });
+  }, { rootMargin: "240px 0px" });
+  images.forEach((image) => observer.observe(image));
 }
 
 function renderLogs(logs) {
@@ -1836,6 +2208,7 @@ async function refreshListings() {
     optimizationRecords = pruneRecordsAgainstLiveCache(optimizationRecords, "optimizationRecords_after_listings");
     queueRecords = pruneRecordsAgainstLiveCache(queueRecords, "queueRecords_after_listings");
     renderProducts();
+    pruneStaleOptimizationState("refreshListings_rendered", renderedLiveListingIds());
     renderOptimizations(optimizationRecords);
     renderQueue(queueRecords);
     renderHistorySidebar(optimizationRecords);
@@ -1935,15 +2308,31 @@ async function sendSingle(product) {
 
 async function sendBatch(productsToSend) {
   if (!productsToSend.length) {
-    showToast("Select at least one listing first.", "error");
+    showToast("Select at least one optimized listing first.", "error");
     setStatus("Failed");
     return;
   }
   setStatus("Sending");
   sendBatchBtn.disabled = true;
+  const previousText = sendBatchBtn.textContent;
+  sendBatchBtn.textContent = "Sending...";
   try {
-    const liveIds = liveListingIds();
+    const liveIds = renderedLiveListingIds();
+    console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
+    pruneStaleOptimizationState("before_send", liveIds);
+    productsToSend = productsToSend.filter((listing) => {
+      const id = String(listing.listing_id || "");
+      const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
+      if (!keep) console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
+      return keep;
+    });
+    if (!productsToSend.length) {
+      showToast("Refresh listings and regenerate optimization", "error");
+      setStatus("Failed");
+      return;
+    }
     console.log("[SEND BATCH LIVE IDS ONLY]", [...liveIds]);
+    console.log("[FRONTEND SEND SELECTED]", { selectedIds: productsToSend.map((listing) => String(listing.listing_id || "")) });
     if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(String(listing.listing_id || "")) || !liveIds.has(String(listing.listing_id || "")))) {
       console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map((listing) => String(listing.listing_id || "")) });
       showToast("Refresh listings and regenerate optimization", "error");
@@ -1954,7 +2343,10 @@ async function sendBatch(productsToSend) {
     const productsWithOptimizations = safeBatch.map((listing) => {
       const listingId = String(listing.listing_id || "");
       const record = optimizationRecords.find((item) => String(item.listing_id || "") === listingId && recordOutputValid(item));
-      if (!record?.after) return listing;
+      if (!record?.after) {
+        showToast("This product needs optimization before sending.", "error");
+        return listing;
+      }
       return {
         ...listing,
         optimized_title: optimizedTitleFrom(record.after, listing) || listing.optimized_title || listing.optimizedTitle,
@@ -1969,6 +2361,7 @@ async function sendBatch(productsToSend) {
     });
     setStatus(response.ok ? "Queued" : "Failed");
     const result = await parseJsonResponse(response);
+    console.log("[FRONTEND SEND RESULT]", result);
     debugLog("batch api response received", result);
     if (response.status === 401 || response.status === 402) {
       handleAuthOrBillingError(response, result);
@@ -1980,15 +2373,57 @@ async function sendBatch(productsToSend) {
       showToast(message, "error");
       return;
     }
-    if (result.session) renderSession(result.session);
-    const responseResults = Array.isArray(result.results) ? result.results : Array.isArray(result.data?.results) ? result.data.results : [];
+    if (result.session || result.data?.session) renderSession(result.session || result.data.session);
+    const payload = unwrapResponse(result, result);
+    const responseResults = Array.isArray(result.results) ? result.results : Array.isArray(payload?.results) ? payload.results : [];
+    const staleFailures = responseResults.filter((item) => {
+      const reason = String(item.reason || item.error || item.message || "");
+      return item.status === "failed" && /404|product_not_found|resource not found|not_live_listing|not found/i.test(reason);
+    });
+    if (staleFailures.length) {
+      const staleIds = new Set(staleFailures.map((item) => String(item.listing_id || "")).filter(Boolean));
+      optimizationRecords = optimizationRecords.filter((record) => {
+        const keep = !staleIds.has(String(record.listing_id || ""));
+        if (!keep) console.log("[FRONTEND STALE OPTIMIZATION REMOVED]", { source: "send_failure", listing_id: String(record.listing_id || "") });
+        return keep;
+      });
+      queueRecords = queueRecords.filter((record) => !staleIds.has(String(record.listing_id || "")));
+      staleIds.forEach((id) => {
+        selectedListingIds.delete(id);
+        pendingOptimizationByListing.delete(id);
+        listingOptimizationDebug.delete(id);
+      });
+      try {
+        for (const storage of [localStorage, sessionStorage]) {
+          Object.keys(storage)
+            .filter((key) => [...staleIds].some((id) => key.includes(id)) || /optimization|queue/i.test(key))
+            .forEach((key) => storage.removeItem(key));
+        }
+      } catch {
+        // Storage cleanup is best effort only.
+      }
+    }
     const sendMethod = result.send_method || result.data?.send_method || "";
     safeBatch.forEach((listing, index) => {
       const itemResult = responseResults[index] || {};
-      if (sendMethod === "etsy_api" || itemResult.status === "sent") markListingSent(listing, itemResult);
+      if ((sendMethod === "etsy_api" || itemResult.status === "sent") && itemResult.verified === true) markListingSent(listing, itemResult);
       else applyOptimizationResponse(listing, itemResult);
     });
-    showToast(sendMethod === "etsy_api" ? "Selected listings sent to Etsy." : "Batch queued for AI optimization.", "success");
+    const sent = Number(result.sent ?? payload.sent ?? responseResults.filter((item) => item.status === "sent").length);
+    const skipped = Number(result.skipped ?? payload.skipped ?? responseResults.filter((item) => item.status === "skipped").length);
+    const failed = Number(result.failed ?? payload.failed ?? responseResults.filter((item) => item.status === "failed").length);
+    if (failed || skipped) {
+      const details = responseResults
+        .filter((item) => item.status === "skipped" || item.status === "failed")
+        .slice(0, 3)
+        .map((item) => sendResultMessage(item))
+        .join("; ");
+      console.log("[SEND FAILURE DETAIL]", result);
+      showToast(`Some listings need attention. Sent ${sent}, skipped ${skipped}, failed ${failed}${details ? ` - ${details}` : ""}`, failed ? "error" : "success");
+    } else {
+      const verifiedSent = responseResults.filter((item) => item.status === "sent" && item.verified === true).length;
+      showToast(verifiedSent ? `${verifiedSent} listings Updated on Etsy` : "Etsy accepted request but listing did not change", verifiedSent ? "success" : "error");
+    }
     await refreshLogs();
     await refreshOptimizations();
   } catch (error) {
@@ -1997,6 +2432,54 @@ async function sendBatch(productsToSend) {
     showToast("API unavailable. Batch could not be queued.", "error");
   } finally {
     sendBatchBtn.disabled = false;
+    sendBatchBtn.textContent = previousText;
+  }
+}
+
+function sendReasonLabel(reason = "", status = "failed") {
+  const baseReason = String(reason || "").split(":")[0].trim();
+  const labels = {
+    auth_expired: "Etsy authorization expired",
+    etsy_validation_error: "Etsy validation error",
+    etsy_update_not_applied: "Etsy accepted request but listing did not change",
+    not_optimized: "not optimized",
+    no_optimized_changes: "no optimized changes",
+    not_live_listing: "product not found in live listings",
+    etsy_api_failed: "Etsy API failed",
+    missing_listing_id: "missing listing ID",
+    invalid_listing_id: "missing listing ID"
+  };
+  const detail = String(reason || "").includes(":") ? String(reason).split(":").slice(1).join(":").trim() : "";
+  const label = labels[baseReason] || (status === "skipped" ? "skipped" : "Etsy update failed");
+  return detail ? `${label}: ${detail}` : label;
+}
+
+function sendResultMessage(item = {}) {
+  const status = item.status === "skipped" ? "skipped" : "failed";
+  const label = sendReasonLabel(item.reason, status);
+  const id = item.listing_id && item.listing_id !== "unknown" ? `Listing ${item.listing_id}` : "Selected listing";
+  return `${id} ${status} — ${label}`;
+}
+
+async function optimizeSingleListingById(listingId = "", options = {}) {
+  const product = liveListingById(listingId) || products.find((item) => String(item.listing_id || "") === String(listingId || ""));
+  if (!product) {
+    showToast("Refresh Etsy listings before optimizing this item.", "error");
+    return;
+  }
+  console.log("[SINGLE OPTIMIZE]", { listingId: String(product.listing_id || "") });
+  if (options.inlineQuickResult) {
+    console.log("[QUICK OPTIMIZE INLINE]", { listingId: String(product.listing_id || "") });
+    updateQuickOptimizationArea(product, { status: "Optimizing..." });
+  }
+  selectedListingIds.clear();
+  selectedListingIds.add(productSelectionId(product, products.indexOf(product)));
+  selectStudioProduct(product, "", { scroll: options.scroll !== false });
+  renderProducts();
+  await sendSingle(product);
+  if (options.inlineQuickResult) {
+    updateQuickOptimizationArea(product);
+    console.log("[OPTIMIZE NO SCROLL]", { listingId: String(product.listing_id || "") });
   }
 }
 
@@ -2036,6 +2519,56 @@ productsEl?.addEventListener("click", (event) => {
   const button = event.target.closest("[data-connect-etsy]");
   if (!button) return;
   window.location.href = "/api/etsy/auth";
+});
+
+quickAnalyzerFormEl?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const listingId = extractListingId(quickAnalyzerInputEl?.value || "");
+  console.log("[QUICK ANALYZER]", { listingId });
+  if (!listingId) {
+    showToast("Paste a valid Etsy listing URL or ID.", "error");
+    return;
+  }
+  console.log("[QUICK ANALYZER PARSED]", { listingId });
+  showToast("Listing detected", "success");
+  const messageEl = document.querySelector("#quickAnalyzerMessage");
+  if (messageEl) messageEl.textContent = "Listing detected — ready to optimize";
+  const product = liveListingById(listingId) || products.find((item) => String(item.listing_id || "") === listingId) || null;
+  try {
+    const imageData = await loadListingImage(listingId);
+    if (product) {
+      renderQuickAnalyzerResult(product, imageData.image_url || product.image_url || product.thumbnail_url || "");
+      selectStudioProduct(product, "", { scroll: false });
+      console.log("[QUICK ANALYZER NO SCROLL]", { listingId });
+    } else {
+      const externalProduct = {
+        listing_id: listingId,
+        title: "External Etsy listing",
+        name: "External Etsy listing",
+        image_url: imageData.image_url || "",
+        sync_source: "external"
+      };
+      const externalMessage = "Image loaded. Connect or refresh Etsy listings for full optimization.";
+      renderQuickAnalyzerResult(externalProduct, imageData.image_url || "", externalMessage);
+      renderOptimizationStudio(externalProduct, externalMessage);
+      console.log("[QUICK ANALYZER NO SCROLL]", { listingId });
+    }
+  } catch (error) {
+    showToast("Listing image could not be loaded yet.", "error");
+  }
+});
+
+listingSearchInputEl?.addEventListener("input", () => {
+  listingSearchQuery = listingSearchInputEl.value || "";
+  renderProducts();
+});
+
+listingFilterBarEl?.addEventListener("click", (event) => {
+  const button = event.target.closest("[data-listing-filter]");
+  if (!button) return;
+  activeListingFilter = button.dataset.listingFilter || "all";
+  listingFilterBarEl.querySelectorAll("button").forEach((item) => item.classList.toggle("selected", item === button));
+  renderProducts();
 });
 
 etsyConnectBannerEl?.addEventListener("click", (event) => {
@@ -2113,7 +2646,7 @@ logsEl?.addEventListener("click", async (event) => {
     setStatus("Failed");
     return;
   }
-  if (result.session) renderSession(result.session);
+    if (result.session || result.data?.session) renderSession(result.session || result.data.session);
   setStatus(result.status === "completed" ? "Completed" : "Failed");
   await refreshLogs();
   await refreshOptimizations();
@@ -2164,6 +2697,18 @@ optimizationsEl?.addEventListener("click", async (event) => {
 });
 
 productsEl?.addEventListener("click", async (event) => {
+  const optimizeButton = event.target.closest("[data-optimize-now]");
+  if (optimizeButton) {
+    event.preventDefault();
+    await optimizeSingleListingById(optimizeButton.dataset.optimizeNow);
+    return;
+  }
+  const card = event.target.closest(".product-card");
+  if (card && !event.target.closest("button,input,[data-preview]")) {
+    const checkbox = card.querySelector("[data-product-id]");
+    const product = products.find((item, index) => productSelectionId(item, index) === checkbox?.dataset.productId);
+    if (product) selectStudioProduct(product);
+  }
   const copyButton = event.target.closest("[data-copy-field]");
   if (copyButton) {
     event.preventDefault();
@@ -2193,6 +2738,46 @@ productsEl?.addEventListener("click", async (event) => {
     body: JSON.stringify({ listings: [{ listing_id: record.listing_id, name: record.listing_name }] })
   });
   await refreshQueue();
+});
+
+quickAnalyzerResultEl?.addEventListener("click", async (event) => {
+  const optimizeButton = event.target.closest("[data-optimize-now]");
+  if (optimizeButton) {
+    event.preventDefault();
+    await optimizeSingleListingById(optimizeButton.dataset.optimizeNow, { scroll: false, inlineQuickResult: true });
+    return;
+  }
+  const copyButton = event.target.closest("[data-copy-field]");
+  if (copyButton) {
+    event.preventDefault();
+    await copyOptimizedField(copyButton.dataset.copyListing, copyButton.dataset.copyField);
+    return;
+  }
+  const openButton = event.target.closest("[data-open-etsy]");
+  if (openButton) {
+    event.preventDefault();
+    openEtsyListingEditor(openButton.dataset.openEtsy);
+  }
+});
+
+optimizationStudioEl?.addEventListener("click", async (event) => {
+  const optimizeButton = event.target.closest("[data-studio-optimize]");
+  if (optimizeButton) {
+    event.preventDefault();
+    await optimizeSingleListingById(optimizeButton.dataset.studioOptimize);
+    return;
+  }
+  const copyButton = event.target.closest("[data-copy-field]");
+  if (copyButton) {
+    event.preventDefault();
+    await copyOptimizedField(copyButton.dataset.copyListing, copyButton.dataset.copyField);
+    return;
+  }
+  const openButton = event.target.closest("[data-open-etsy]");
+  if (openButton) {
+    event.preventDefault();
+    openEtsyListingEditor(openButton.dataset.openEtsy);
+  }
 });
 
 productsEl?.addEventListener("change", (event) => {
