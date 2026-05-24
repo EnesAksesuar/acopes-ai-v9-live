@@ -1141,6 +1141,38 @@ function latestOptimizationForListing(listingId = "") {
   return optimizationRecords.find((record) => String(record.listing_id || "") === normalizedId && recordOutputValid(record));
 }
 
+function optimizationReadyForListing(listing = {}) {
+  const listingId = String(listing.listing_id || listing.id || "");
+  const record = latestOptimizationForListing(listingId);
+  const live = liveListingIds().has(listingId);
+  const hasRecord = Boolean(record?.after && recordOutputValid(record));
+  const hasListingOptimizedData = Boolean(
+    listing.optimized_title ||
+    listing.optimizedTitle ||
+    listing.optimized_description ||
+    listing.optimizedDescription ||
+    (Array.isArray(listing.optimized_tags) && listing.optimized_tags.length) ||
+    (Array.isArray(listing.optimizedTags) && listing.optimizedTags.length)
+  );
+  const ready = live && (hasRecord || hasListingOptimizedData || listing.readyForSend === true);
+  console.log("[OPTIMIZATION READY CHECK]", { listing_id: listingId, live, hasRecord, hasListingOptimizedData, ready });
+  return { ready, record, live, hasRecord, hasListingOptimizedData };
+}
+
+function markListingReadyForSend(listingId = "", normalized = {}, title = "") {
+  products.forEach((item) => {
+    if (String(item.listing_id || "") !== String(listingId || "")) return;
+    item.readyForSend = true;
+    item.optimizedTitle = title || optimizedTitleFrom(normalized, item);
+    item.optimized_title = item.optimizedTitle;
+    item.optimizedDescription = normalized.optimized_description || normalized.description || item.optimizedDescription || "";
+    item.optimized_description = item.optimizedDescription;
+    item.optimizedTags = normalized.optimized_tags || normalized.tags || item.optimizedTags || [];
+    item.optimized_tags = item.optimizedTags;
+  });
+  console.log("[LISTING READY FOR SEND]", { listing_id: String(listingId || "") });
+}
+
 function optimizedFieldPayload(listingId = "") {
   const record = latestOptimizationForListing(listingId);
   const product = liveListingById(listingId) || products.find((item) => String(item.listing_id || "") === String(listingId || "")) || {};
@@ -1462,6 +1494,7 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
   }
   products.forEach((item) => {
     if (String(item.listing_id || "") !== listingId) return;
+    item.readyForSend = true;
     item.optimizedTitle = title;
     item.optimized_title = title;
     item.optimizedDescription = normalized.optimized_description || normalized.description || "";
@@ -1471,6 +1504,8 @@ function applyOptimizationResponse(listing = {}, payload = {}) {
     item.optimization_pending_validation = false;
     item.optimization_pending_message = "";
   });
+  console.log("[OPTIMIZATION → LISTING MAP]", { listing_id: listingId, mapped: Boolean(liveListingById(listingId)), title });
+  markListingReadyForSend(listingId, normalized, title);
   if (existingIndex >= 0) optimizationRecords.splice(existingIndex, 1, record);
   else optimizationRecords.unshift(record);
   renderProducts();
@@ -2380,19 +2415,13 @@ async function sendSingle(product) {
     clearOptimizationPending(product);
     const completedTitle = data.optimized_title || data.after?.optimized_title || data.optimization_record?.after?.optimized_title || result.optimized_title || "";
     if (completedTitle) {
-      products.forEach((item) => {
-        if (String(item.listing_id || "") !== String(product.listing_id || "")) return;
-        item.optimizedTitle = completedTitle;
-        item.optimized_title = completedTitle;
-        item.optimization_pending_validation = false;
-        item.optimization_pending_message = "";
-      });
+      const normalizedEarly = normalizeOptimizationResponse(result, product);
+      markListingReadyForSend(product.listing_id, normalizedEarly, completedTitle);
       pendingOptimizationByListing.delete(String(product.listing_id || ""));
     }
     applyOptimizationResponse(product, result);
     showToast("Optimization queued. ACOPES AI is processing this listing.", "success");
     await refreshLogs();
-    await refreshOptimizations();
   } catch (error) {
     debugLog("send api failed", error);
     setStatus("Failed");
@@ -2447,20 +2476,36 @@ async function sendBatch(productsToSend) {
       return;
     }
     const safeBatch = productsToSend.filter((listing) => liveIds.has(String(listing.listing_id)) && String(listing.listing_id) !== "4384247178");
+    const readyIds = safeBatch.filter((listing) => optimizationReadyForListing(listing).ready).map((listing) => String(listing.listing_id || ""));
+    console.log("[SEND READY IDS]", readyIds);
     const productsWithOptimizations = safeBatch.map((listing) => {
       const listingId = String(listing.listing_id || "");
-      const record = optimizationRecords.find((item) => String(item.listing_id || "") === listingId && recordOutputValid(item));
-      if (!record?.after) {
-        showToast("This product needs optimization before sending.", "error");
+      const readyState = optimizationReadyForListing(listing);
+      const record = readyState.record;
+      const after = record?.after || {
+        seo_title: listing.optimized_title || listing.optimizedTitle || "",
+        optimized_title: listing.optimized_title || listing.optimizedTitle || "",
+        description: listing.optimized_description || listing.optimizedDescription || "",
+        optimized_description: listing.optimized_description || listing.optimizedDescription || "",
+        tags: listing.optimized_tags || listing.optimizedTags || [],
+        optimized_tags: listing.optimized_tags || listing.optimizedTags || []
+      };
+      if (!readyState.ready) {
+        console.log("[OPTIMIZATION READY CHECK]", { listing_id: listingId, ready: false, reason: "not_mapped" });
+        showToast("Optimization finished but listing mapping failed.", "error");
         return listing;
       }
       return {
         ...listing,
-        optimized_title: optimizedTitleFrom(record.after, listing) || listing.optimized_title || listing.optimizedTitle,
-        optimized_description: optimizedDescriptionFrom(record.after) || listing.optimized_description || listing.optimizedDescription,
-        optimized_tags: optimizedTagsFrom(record.after).length ? optimizedTagsFrom(record.after) : listing.optimized_tags || listing.optimizedTags || listing.tags
+        optimized_title: optimizedTitleFrom(after, listing) || listing.optimized_title || listing.optimizedTitle,
+        optimized_description: optimizedDescriptionFrom(after) || listing.optimized_description || listing.optimizedDescription,
+        optimized_tags: optimizedTagsFrom(after).length ? optimizedTagsFrom(after) : listing.optimized_tags || listing.optimizedTags || []
       };
-    });
+    }).filter((listing) => optimizationReadyForListing(listing).ready);
+    if (!productsWithOptimizations.length) {
+      setStatus("Failed");
+      return;
+    }
     const response = await fetch("/api/send-batch", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
