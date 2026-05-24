@@ -64,6 +64,8 @@ console.log("ETSY_CLIENT_ID first 6 chars:", process.env.ETSY_CLIENT_ID?.slice(0
 console.log("ETSY_CLIENT_SECRET exists:", Boolean(process.env.ETSY_CLIENT_SECRET));
 const FREE_OPTIMIZATION_LIMIT = 15;
 const ETSY_REFRESH_WINDOW_MS = 5 * 60 * 1000;
+const listingImageCache = new Map();
+const LISTING_IMAGE_CACHE_TTL_MS = 60 * 60 * 1000;
 const PLAN_CREDITS = {
   free: 15,
   pro: 100,
@@ -1915,67 +1917,7 @@ function extractEtsyResults(payload) {
 function imageUrlFromImages(images = []) {
   const firstImage = Array.isArray(images) ? images[0] : null;
   if (!firstImage) return "";
-  return firstImage.url_570xN || firstImage.url_fullxfull || firstImage.url_340x270 || firstImage.url_170x135 || firstImage.url_75x75 || firstImage.url || "";
-}
-
-function sleep(ms = 100) {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
-async function fetchVisibleListingImageMap(listings = [], tokens = {}) {
-  const listingIds = listings.slice(0, 10).map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean);
-  if (!listingIds.length) return new Map();
-  const fetchImages = async () => {
-    const imageMap = new Map();
-    try {
-      const batchEndpoint = `${ETSY_API_FALLBACK_BASE}/listings/batch?listing_ids=${encodeURIComponent(listingIds.join(","))}&includes=Images`;
-      const batchResponse = await fetch(batchEndpoint, {
-        headers: etsyApiHeaders(tokens.access_token)
-      });
-      const batchPayload = await batchResponse.json().catch(() => ({}));
-      if (!batchResponse.ok) throw new Error(batchPayload.error || batchPayload.message || `Etsy image batch failed with ${batchResponse.status}`);
-      for (const listing of extractEtsyResults(batchPayload)) {
-        const listingId = normalizeListingId(listing.listing_id || listing.id);
-        const images = listing.images || listing.Images || [];
-        const imageUrl = listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
-        console.log("[IMAGE FETCH RESULT]", { listing_id: listingId, image_url: imageUrl });
-        if (listingId && imageUrl) imageMap.set(listingId, { images, image_url: imageUrl });
-      }
-      if (imageMap.size) return imageMap;
-      throw new Error("Etsy image batch returned no usable images.");
-    } catch (error) {
-      etsyDebug("Etsy batch image fetch failed", {
-        listing_count: listingIds.length,
-        message: error instanceof Error ? error.message : String(error)
-      });
-    }
-
-    for (const listingId of listingIds.slice(0, 5)) {
-      try {
-        await sleep(100);
-        const imageEndpoint = `${ETSY_API_FALLBACK_BASE}/listings/${encodeURIComponent(listingId)}/images`;
-        const imageResponse = await fetch(imageEndpoint, {
-          headers: etsyApiHeaders(tokens.access_token)
-        });
-        const imagePayload = await imageResponse.json().catch(() => ({}));
-        if (!imageResponse.ok) throw new Error(imagePayload.error || imagePayload.message || `Etsy image fetch failed with ${imageResponse.status}`);
-        const images = extractEtsyResults(imagePayload);
-        const imageUrl = imageUrlFromImages(images);
-        console.log("[IMAGE FETCH RESULT]", { listing_id: listingId, image_url: imageUrl });
-        if (imageUrl) imageMap.set(listingId, { images, image_url: imageUrl });
-      } catch (error) {
-        etsyDebug("Etsy listing image fetch failed", {
-          listing_id: listingId,
-          message: error instanceof Error ? error.message : String(error)
-        });
-      }
-    }
-    return imageMap;
-  };
-  return Promise.race([
-    fetchImages(),
-    new Promise((resolve) => setTimeout(() => resolve(new Map()), 5000))
-  ]);
+  return firstImage.url_fullxfull || firstImage.url_570xN || firstImage.url_300x300 || firstImage.url_340x270 || firstImage.url_170x135 || firstImage.url_75x75 || firstImage.url || "";
 }
 
 async function fetchActiveEtsyListingsWithImages(tokens = {}, context = {}) {
@@ -2000,17 +1942,13 @@ async function fetchActiveEtsyListingsWithImages(tokens = {}, context = {}) {
   }
   const rawListings = extractEtsyResults(payload);
   console.log("[RAW FIRST LISTING]", JSON.stringify(rawListings[0] || {}).slice(0, 1000));
-  const fetchedImageMap = await fetchVisibleListingImageMap(rawListings, tokens);
   return rawListings.map((listing) => {
-    const listingId = normalizeListingId(listing.listing_id || listing.id);
-    const images = listing.images || listing.Images || [];
-    const fetchedImage = fetchedImageMap.get(listingId) || {};
-    const imageUrl = fetchedImage.image_url || listing.image_url || listing.url_fullxfull || imageUrlFromImages(images);
     return {
       ...listing,
-      images: fetchedImage.images || images,
-      image_url: imageUrl,
-      thumbnail_url: imageUrl
+      Images: [],
+      images: [],
+      image_url: null,
+      thumbnail_url: null
     };
   });
 }
@@ -2208,18 +2146,192 @@ async function syncEtsyListings(tokens = null, res = null, req = null) {
   return listings;
 }
 
+function sanitizeEtsyTitle(value = "") {
+  return String(value || "").replace(/\s+/g, " ").trim().slice(0, 140).trim();
+}
+
+function sanitizeEtsyDescription(value = "") {
+  return String(value || "").trim();
+}
+
+function sanitizeEtsyTag(value = "") {
+  return String(value || "")
+    .replace(/[^a-zA-Z0-9\s'-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
 function directEtsyUpdatePayload(product = {}) {
-  const title = String(product.optimized_title || product.optimizedTitle || product.seo_title || product.title || "").trim();
-  const description = String(product.optimized_description || product.optimizedDescription || product.description || "").trim();
+  const title = sanitizeEtsyTitle(product.optimized_title || product.optimizedTitle || product.seo_title || "");
+  const description = sanitizeEtsyDescription(product.optimized_description || product.optimizedDescription || "");
   const tagsSource = Array.isArray(product.optimized_tags)
     ? product.optimized_tags
     : Array.isArray(product.optimizedTags)
       ? product.optimizedTags
-      : Array.isArray(product.tags)
-        ? product.tags
-        : [];
-  const tags = tagsSource.map((tag) => String(tag).trim()).filter(Boolean).slice(0, 13);
-  return { title, tags, description };
+      : [];
+  const seenTags = new Set();
+  const tags = tagsSource
+    .map((tag) => sanitizeEtsyTag(tag))
+    .filter(Boolean)
+    .filter((tag) => {
+      const key = tag.toLowerCase();
+      if (seenTags.has(key)) return false;
+      seenTags.add(key);
+      return true;
+    })
+    .filter((tag) => tag.length <= 20)
+    .slice(0, 13);
+  const payload = {};
+  if (title) payload.title = title;
+  if (description) payload.description = description;
+  if (tags.length) payload.tags = tags;
+  return payload;
+}
+
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (normalized) return normalized;
+  }
+  return "";
+}
+
+function firstArrayValue(...values) {
+  for (const value of values) {
+    if (Array.isArray(value) && value.length) return value;
+  }
+  return [];
+}
+
+function extractOptimizedSendFields(source = {}, allowPlainFields = false) {
+  return {
+    title: firstNonEmptyString(
+      source.optimized_title,
+      source.optimizedTitle,
+      allowPlainFields ? source.title : "",
+      source.seo_title
+    ),
+    description: firstNonEmptyString(
+      source.optimized_description,
+      source.optimizedDescription,
+      allowPlainFields ? source.description : "",
+      source.seo_description
+    ),
+    tags: firstArrayValue(
+      source.optimized_tags,
+      source.optimizedTags,
+      allowPlainFields ? source.tags : [],
+      source.suggested_tags,
+      source.suggestedTags
+    )
+  };
+}
+
+function latestOptimizedSendData({ product = {}, storedRecord = null, queueRecord = null } = {}) {
+  const sources = [
+    ["selected_listing_optimization_state", product, false],
+    ["optimization_record_after", storedRecord?.after || {}, true],
+    ["optimization_record", storedRecord || {}, true],
+    ["queue_record_after", queueRecord?.after || {}, true],
+    ["queue_record", queueRecord || {}, true]
+  ];
+  const result = {
+    optimized_title: "",
+    optimized_description: "",
+    optimized_tags: [],
+    sources: {}
+  };
+  for (const [name, source, allowPlainFields] of sources) {
+    const extracted = extractOptimizedSendFields(source, allowPlainFields);
+    if (!result.optimized_title && extracted.title) {
+      result.optimized_title = extracted.title;
+      result.sources.title = name;
+    }
+    if (!result.optimized_description && extracted.description) {
+      result.optimized_description = extracted.description;
+      result.sources.description = name;
+    }
+    if (!result.optimized_tags.length && extracted.tags.length) {
+      result.optimized_tags = extracted.tags;
+      result.sources.tags = name;
+    }
+  }
+  result.source = [...new Set(Object.values(result.sources))].join(",") || "none";
+  return result;
+}
+
+function normalizedTagSet(tags = []) {
+  return new Set((Array.isArray(tags) ? tags : []).map((tag) => String(tag || "").trim().toLowerCase()).filter(Boolean));
+}
+
+function verifyEtsyUpdatePayload(updatePayload = {}, etsyListing = {}) {
+  const etsyTitle = String(etsyListing.title || "").trim();
+  const etsyDescription = String(etsyListing.description || "").trim();
+  const etsyTags = normalizedTagSet(etsyListing.tags);
+  const sentTags = Array.isArray(updatePayload.tags) ? updatePayload.tags : [];
+  const descriptionNeedle = String(updatePayload.description || "").trim().slice(0, 80);
+  const titleUpdated = !updatePayload.title || etsyTitle === updatePayload.title;
+  const descriptionUpdated = !updatePayload.description || (descriptionNeedle && etsyDescription.includes(descriptionNeedle));
+  const tagsUpdated = !sentTags.length || sentTags.every((tag) => etsyTags.has(String(tag || "").trim().toLowerCase()));
+  return {
+    etsy_title_after: etsyTitle,
+    title_updated: titleUpdated,
+    description_updated: Boolean(descriptionUpdated),
+    tags_updated: tagsUpdated,
+    verified: titleUpdated && Boolean(descriptionUpdated) && tagsUpdated
+  };
+}
+
+function responseHeadersObject(response) {
+  return Object.fromEntries(response.headers.entries());
+}
+
+function currentListingPayload(listing = {}) {
+  const tags = Array.isArray(listing.tags) ? listing.tags : [];
+  const payload = {};
+  const title = sanitizeEtsyTitle(listing.title || "");
+  const description = sanitizeEtsyDescription(listing.description || "");
+  const cleanTags = tags.map((tag) => sanitizeEtsyTag(tag)).filter(Boolean).filter((tag) => tag.length <= 20).slice(0, 13);
+  if (title) payload.title = title;
+  if (description) payload.description = description;
+  if (cleanTags.length) payload.tags = cleanTags;
+  return payload;
+}
+
+function mergeEtsyUpdatePayload(optimizedPayload = {}, listing = {}) {
+  const currentPayload = currentListingPayload(listing);
+  const payload = {};
+  if (optimizedPayload.title || currentPayload.title) payload.title = optimizedPayload.title || currentPayload.title;
+  if (optimizedPayload.description || currentPayload.description) payload.description = optimizedPayload.description || currentPayload.description;
+  if (Array.isArray(optimizedPayload.tags) && optimizedPayload.tags.length) payload.tags = optimizedPayload.tags;
+  else if (Array.isArray(currentPayload.tags) && currentPayload.tags.length) payload.tags = currentPayload.tags;
+  const passthroughFields = ["who_made", "when_made", "taxonomy_id", "shipping_profile_id", "return_policy_id"];
+  for (const field of passthroughFields) {
+    if (listing[field] !== undefined && listing[field] !== null && String(listing[field]).trim() !== "") {
+      payload[field] = listing[field];
+    }
+  }
+  if (listing.state || payload.title || payload.description || payload.tags) {
+    payload.state = listing.state || "active";
+  }
+  return payload;
+}
+
+function etsyFormEncodedBody(payload = {}) {
+  const body = new URLSearchParams();
+  if (payload.title) body.set("title", payload.title);
+  if (payload.description) body.set("description", payload.description);
+  if (Array.isArray(payload.tags) && payload.tags.length) body.set("tags", payload.tags.join(","));
+  for (const field of ["who_made", "when_made", "taxonomy_id", "shipping_profile_id", "return_policy_id", "state"]) {
+    if (payload[field] !== undefined && payload[field] !== null && String(payload[field]).trim() !== "") {
+      body.set(field, String(payload[field]));
+    }
+  }
+  return body;
+}
+
+function wait(ms = 0) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function etsyErrorMessage(payload = {}, fallback = "Etsy listing update failed.") {
@@ -2229,6 +2341,41 @@ function etsyErrorMessage(payload = {}, fallback = "Etsy listing update failed."
   if (payload.error_description) return String(payload.error_description);
   if (Array.isArray(payload.errors) && payload.errors.length) return payload.errors.map((item) => item.message || item.error || item).join("; ");
   return fallback;
+}
+
+function sendFailureReason(error = {}) {
+  const status = Number(error.status || error.payload?.etsy_status || 0);
+  const code = String(error.code || "");
+  if (status === 401 || status === 403 || /auth|token|permission/i.test(code)) return "auth_expired";
+  if (code === "missing_optimized_fields") return "not_optimized";
+  if (code === "verification_not_executed") return "verification_not_executed";
+  if (code === "etsy_update_not_applied") return "etsy_update_not_applied";
+  if (code === "stale_listing_id" || code === "etsy_resource_not_found") return "not_live_listing";
+  if (status === 400 || /validation|invalid/i.test(code)) return "etsy_validation_error";
+  return "etsy_api_failed";
+}
+
+function sendFailureReasonWithMessage(error = {}) {
+  const reason = sendFailureReason(error);
+  const body = error?.payload?.etsy_body || error?.payload || {};
+  const message = etsyErrorMessage(body, error instanceof Error ? error.message : String(error || ""));
+  if ((reason === "etsy_validation_error" || reason === "etsy_api_failed") && message) {
+    return `${reason}: ${message}`;
+  }
+  return reason;
+}
+
+function normalizeSendResult(result = {}) {
+  return {
+    listing_id: String(result.listing_id || "unknown"),
+    status: ["sent", "skipped", "failed"].includes(result.status) ? result.status : result.status === "completed" ? "sent" : "failed",
+    reason: result.reason || null,
+    updated_fields: Array.isArray(result.updated_fields) ? result.updated_fields : [],
+    ...(typeof result.verified === "boolean" ? { verified: result.verified } : {}),
+    ...(result.verification ? { verification: result.verification } : {}),
+    ...(result.message ? { message: result.message } : {}),
+    ...(result.etsy_response ? { etsy_response: result.etsy_response } : {})
+  };
 }
 
 function maskedTokenPrefix(token = "") {
@@ -2337,9 +2484,15 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     });
   }
 
-  const updatePayload = directEtsyUpdatePayload(product);
-  if (!updatePayload.title || !updatePayload.description || !updatePayload.tags.length) {
-    const error = new Error("Optimized title, description, and tags are required before sending to Etsy.");
+  const optimizedUpdatePayload = directEtsyUpdatePayload(product);
+  let updatePayload = { ...optimizedUpdatePayload };
+  const updatedFields = Object.keys(optimizedUpdatePayload);
+  console.log("[ETSY FINAL PAYLOAD]", {
+    listing_id: liveListingId,
+    payload: optimizedUpdatePayload
+  });
+  if (!updatedFields.length) {
+    const error = new Error("Optimized title, description, or tags are required before sending to Etsy.");
     error.code = "missing_optimized_fields";
     error.status = 400;
     throw error;
@@ -2394,6 +2547,26 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     };
     throw error;
   }
+  const currentListing = Array.isArray(verifyPayload?.results)
+    ? verifyPayload.results[0] || {}
+    : verifyPayload;
+  console.log("[ETSY CURRENT LISTING]", {
+    listing_id: liveListingId,
+    title: currentListing?.title || "",
+    has_description: Boolean(currentListing?.description),
+    tags_count: Array.isArray(currentListing?.tags) ? currentListing.tags.length : 0,
+    state: currentListing?.state || "",
+    who_made: currentListing?.who_made || "",
+    when_made: currentListing?.when_made || "",
+    taxonomy_id: currentListing?.taxonomy_id || "",
+    shipping_profile_id: currentListing?.shipping_profile_id || "",
+    return_policy_id: currentListing?.return_policy_id || ""
+  });
+  updatePayload = mergeEtsyUpdatePayload(optimizedUpdatePayload, currentListing || {});
+  console.log("[ETSY FINAL PAYLOAD]", {
+    listing_id: liveListingId,
+    payload: updatePayload
+  });
 
   let endpoint = `${etsyUpdateBase}${listingPath}`;
   console.log("[ETSY PUT BASE USED]", etsyUpdateBase);
@@ -2411,30 +2584,72 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     access_token_prefix: maskedTokenPrefix(tokens.access_token)
   });
   const putHeaders = {
-    "Content-Type": "application/json",
+    "Content-Type": "application/x-www-form-urlencoded",
     "x-api-key": process.env.ETSY_CLIENT_ID || "",
     "Authorization": `Bearer ${tokens.access_token}`
   };
-  let response = await fetch(endpoint, {
-    method: "PUT",
-    headers: putHeaders,
-    body: JSON.stringify(updatePayload)
+  const method = "PUT";
+  console.log("[ETSY APPLY TEST]", {
+    listing_id: liveListingId,
+    endpoint,
+    method,
+    payload: updatePayload
   });
-  let responseText = await response.text();
+  console.log("[ETSY UPDATE REQUEST]", {
+    listing_id: liveListingId,
+    method,
+    endpoint,
+    payload: updatePayload
+  });
+  let response;
+  let responseText = "";
   let payload = {};
   try {
-    payload = responseText ? JSON.parse(responseText) : {};
-  } catch {
-    payload = responseText;
+    response = await fetch(endpoint, {
+      method,
+      headers: putHeaders,
+      body: etsyFormEncodedBody(updatePayload)
+    });
+    responseText = await response.text();
+    try {
+      payload = responseText ? JSON.parse(responseText) : {};
+    } catch {
+      payload = responseText;
+    }
+    console.log("[ETSY UPDATE RESPONSE]", {
+      listing_id: liveListingId,
+      status: response.status,
+      body: payload
+    });
+    console.log("[ETSY RAW RESPONSE]", {
+      listing_id: liveListingId,
+      status: response.status,
+      headers: responseHeadersObject(response),
+      body: payload
+    });
+  } catch (error) {
+    console.error("[ETSY UPDATE ERROR]", {
+      listing_id: liveListingId,
+      statusCode: error?.status || null,
+      message: error instanceof Error ? error.message : String(error),
+      body: error?.payload || null
+    });
+    throw error;
   }
   if (!response.ok && response.status === 404) {
     const fallbackEndpoint = `${etsyUpdateBase}${listingPath}`;
     console.log("[ETSY PUT BASE USED]", etsyUpdateBase);
     console.log("[ETSY PUT URL]", fallbackEndpoint);
+    console.log("[ETSY UPDATE REQUEST]", {
+      listing_id: liveListingId,
+      method,
+      endpoint: fallbackEndpoint,
+      payload: updatePayload
+    });
     response = await fetch(fallbackEndpoint, {
-      method: "PUT",
+      method,
       headers: putHeaders,
-      body: JSON.stringify(updatePayload)
+      body: etsyFormEncodedBody(updatePayload)
     });
     endpoint = fallbackEndpoint;
     responseText = await response.text();
@@ -2443,6 +2658,17 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     } catch {
       payload = responseText;
     }
+    console.log("[ETSY UPDATE RESPONSE]", {
+      listing_id: liveListingId,
+      status: response.status,
+      body: payload
+    });
+    console.log("[ETSY RAW RESPONSE]", {
+      listing_id: liveListingId,
+      status: response.status,
+      headers: responseHeadersObject(response),
+      body: payload
+    });
   }
   const errorMessage = etsyErrorMessage(payload, response.ok ? "" : `Etsy listing update failed with ${response.status}.`);
   console.log("[ETSY RESPONSE STATUS]", response.status);
@@ -2479,14 +2705,72 @@ async function updateEtsyListingDirect(req, res, product = {}) {
       token_shop_id: tokens.shop_id || "",
       request_listing_id: rawListingId
     });
+    console.error("[ETSY UPDATE ERROR]", {
+      listing_id: liveListingId,
+      statusCode: response.status,
+      message: errorMessage,
+      body: payload
+    });
     const error = new Error(errorMessage);
-    error.code = response.status === 404 ? "etsy_resource_not_found" : "etsy_update_failed";
+    error.code = response.status === 404 ? "etsy_resource_not_found" : response.status === 400 ? "etsy_validation_error" : "etsy_api_failed";
     error.status = response.status;
     error.payload = {
       shop_id: shopId,
       listing_id: liveListingId,
       etsy_status: response.status,
       etsy_body: payload
+    };
+    throw error;
+  }
+
+  await wait(2000);
+  const afterVerifyResponse = await fetch(verifyEndpoint, {
+    method: "GET",
+    headers: etsyApiHeaders(tokens.access_token)
+  });
+  const afterVerifyText = await afterVerifyResponse.text();
+  let afterVerifyPayload = {};
+  try {
+    afterVerifyPayload = afterVerifyText ? JSON.parse(afterVerifyText) : {};
+  } catch {
+    afterVerifyPayload = afterVerifyText;
+  }
+  const afterListing = Array.isArray(afterVerifyPayload?.results)
+    ? afterVerifyPayload.results[0] || {}
+    : afterVerifyPayload;
+  const updateVerification = verifyEtsyUpdatePayload(updatePayload, afterListing || {});
+  console.log("[ETSY UPDATE VERIFY]", {
+    listing_id: liveListingId,
+    sent_title: updatePayload.title || "",
+    etsy_title_after: updateVerification.etsy_title_after,
+    title_updated: updateVerification.title_updated,
+    description_updated: updateVerification.description_updated,
+    tags_updated: updateVerification.tags_updated
+  });
+  console.log("[ETSY APPLY VERIFY]", {
+    listing_id: liveListingId,
+    before_title: currentListing?.title || "",
+    after_title: updateVerification.etsy_title_after,
+    title_changed: currentListing?.title !== updateVerification.etsy_title_after,
+    tags_changed: updateVerification.tags_updated,
+    description_changed: updateVerification.description_updated
+  });
+  if (!afterVerifyResponse.ok || !updateVerification.verified) {
+    const verifyMessage = afterVerifyResponse.ok
+      ? "Etsy accepted request but listing did not change"
+      : etsyErrorMessage(afterVerifyPayload, `Etsy update verification failed with ${afterVerifyResponse.status}.`);
+    const error = new Error(verifyMessage);
+    error.code = "etsy_update_not_applied";
+    error.status = afterVerifyResponse.ok ? 409 : afterVerifyResponse.status;
+    error.payload = {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      etsy_status: afterVerifyResponse.status,
+      etsy_body: afterVerifyPayload,
+      verification: updateVerification,
+      sent_payload: updatePayload,
+      update_response: payload,
+      update_response_status: response.status
     };
     throw error;
   }
@@ -2503,7 +2787,9 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     etsy_response: {
       status: response.status,
       ok: true,
-      body: payload
+      body: payload,
+      verified: true,
+      verification: updateVerification
     }
   };
   const logs = await readLogs();
@@ -2515,9 +2801,12 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     status: "sent",
     send_method: "etsy_api",
     listing_id: liveListingId,
+    updated_fields: updatedFields,
     completed_at: log.completed_at,
     etsy_response: log.etsy_response,
-    sent_payload: updatePayload
+    sent_payload: updatePayload,
+    verified: true,
+    verification: updateVerification
   };
 }
 
@@ -3132,6 +3421,47 @@ app.get("/api/listings", requireUser, async (req, res) => {
   }
 });
 
+app.get("/api/listing/:listing_id/image", requireUser, async (req, res) => {
+  const listingId = normalizeListingId(req.params.listing_id);
+  if (!/^\d+$/.test(listingId)) {
+    res.status(400).json({ ok: false, listing_id: listingId, image_url: null, error: "invalid_listing_id" });
+    return;
+  }
+  const cached = listingImageCache.get(listingId);
+  if (cached && cached.expires_at > Date.now()) {
+    console.log("[LISTING IMAGE CACHE HIT]", { listing_id: listingId });
+    res.json({ ok: true, listing_id: listingId, image_url: cached.image_url || null, cached: true });
+    return;
+  }
+  try {
+    console.log("[LISTING IMAGE FETCH]", { listing_id: listingId });
+    const userTokens = await resolveRequestEtsyAuth(req);
+    if (!userTokens.access_token) {
+      res.status(401).json({ ok: false, listing_id: listingId, image_url: null, error: "etsy_not_connected" });
+      return;
+    }
+    const tokens = await ensureValidEtsyToken(userTokens, res, req);
+    const response = await fetch(`${ETSY_API_FALLBACK_BASE}/listings/${encodeURIComponent(listingId)}/images`, {
+      headers: etsyApiHeaders(tokens.access_token)
+    });
+    const payload = await response.json().catch(() => ({}));
+    if (!response.ok) throw new Error(payload.error || payload.message || `Etsy image fetch failed with ${response.status}`);
+    const imageUrl = imageUrlFromImages(extractEtsyResults(payload)) || null;
+    listingImageCache.set(listingId, {
+      image_url: imageUrl,
+      expires_at: Date.now() + LISTING_IMAGE_CACHE_TTL_MS
+    });
+    console.log("[LISTING IMAGE RESULT]", { listing_id: listingId, image_url: imageUrl });
+    res.json({ ok: true, listing_id: listingId, image_url: imageUrl, cached: false });
+  } catch (err) {
+    console.warn("[LISTING IMAGE ERROR]", {
+      listing_id: listingId,
+      error: err instanceof Error ? err.message : String(err)
+    });
+    res.status(502).json({ ok: false, listing_id: listingId, image_url: null, error: "etsy_image_fetch_failed" });
+  }
+});
+
 app.post("/api/optimize", requireUser, async (req, res) => {
   try {
     await incrementAnalytics("optimization_started");
@@ -3182,58 +3512,193 @@ app.post("/api/send", requireUser, async (req, res) => {
 });
 
 async function handleSendBatch(req, res) {
+  console.log("[ACTIVE SEND ROUTE HIT]", { path: req.path, body: req.body });
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);
   const devMode = isDevelopmentBypass(req);
+  const requestedIds = products.map((product) => normalizeListingId(product.listing_id || product.id)).filter(Boolean);
+  console.log("[SEND SELECTED START]", { count: requestedIds.length });
   console.log("[SEND BATCH REQUEST]", {
     count: products.length,
     direct_etsy_mode: !WEBHOOK_URL,
-    listing_ids: products.map((product) => normalizeListingId(product.listing_id || product.id))
+    listing_ids: requestedIds
   });
   if (!user) {
     res.status(401).json(errorResponse("email_required", "Email onboarding is required.", { session: sessionSummary(req.session, null, { dev_mode: devMode }) }));
     return;
   }
-  if (!devMode && user.credits_remaining < products.length) {
-    res.status(402).json(errorResponse("credits_depleted", "Credits depleted.", { session: sessionSummary(req.session, user) }));
+  if (!products.length || !requestedIds.length) {
+    res.status(400).json(errorResponse("no_valid_listings", "Select at least one optimized listing first.", {
+      ok: false,
+      sent: 0,
+      skipped: 0,
+      failed: 0,
+      results: [],
+      session: sessionSummary(req.session, user, { dev_mode: devMode })
+    }));
     return;
   }
   const results = [];
-  const directEtsyMode = !WEBHOOK_URL;
+  const directEtsyMode = true;
+  let sent = 0;
+  let skipped = 0;
+  let failed = 0;
   try {
+    let liveIds = new Set();
+    if (directEtsyMode) {
+      const tokens = await discoverEtsyShop(await ensureValidEtsyToken(await resolveRequestEtsyAuth(req), res, req), { req, res });
+      let liveListings = await readListingsCache(tokens.shop_id);
+      if (!liveListings.length) liveListings = await syncEtsyListings(tokens, res, req);
+      liveIds = new Set(liveListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
+      console.log("[SEND SELECTED LIVE IDS]", { liveCount: liveIds.size });
+    }
+    const storedOptimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
+    const storedQueue = await readRuntimeJson(queuePath, queueSeedPath, []);
     for (const product of products) {
+      const listingId = normalizeListingId(product.listing_id || product.id);
       console.log("[SEND BATCH ITEM]", {
-        listing_id: normalizeListingId(product.listing_id || product.id),
+        listing_id: listingId,
         title: product.title || product.name || "",
         has_optimized_title: Boolean(product.optimized_title || product.optimizedTitle)
       });
-      await incrementAnalytics("optimization_started");
-      const sendProduct = { ...product, email: sessionEmail(req), optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo" };
-      results.push(directEtsyMode ? await updateEtsyListingDirect(req, res, sendProduct) : await sendToMakeWithTaxonomyRetry(sendProduct));
+      if (!listingId || !/^\d+$/.test(listingId) || ["none", "undefined", "null"].includes(String(listingId).toLowerCase())) {
+        skipped += 1;
+        console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "invalid_listing_id" });
+        results.push(normalizeSendResult({ listing_id: listingId || "unknown", status: "skipped", reason: "missing_listing_id" }));
+        continue;
+      }
+      if (directEtsyMode && (!liveIds.has(listingId) || (listingId === "4384247178" && !liveIds.has(listingId)))) {
+        skipped += 1;
+        console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
+        results.push(normalizeSendResult({ listing_id: listingId, status: "skipped", reason: "not_live_listing" }));
+        continue;
+      }
+      const storedRecord = storedOptimizations.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
+      const queueRecord = storedQueue.find((record) => String(record.listing_id || "") === listingId && belongsToSessionEmail(record, req));
+      const optimizedSendData = latestOptimizedSendData({ product, storedRecord, queueRecord });
+      console.log("[SEND DATA SOURCE]", {
+        listing_id: listingId,
+        original_title: product.title || product.name || "",
+        optimized_title: optimizedSendData.optimized_title,
+        optimized_description_exists: Boolean(optimizedSendData.optimized_description),
+        optimized_tags: optimizedSendData.optimized_tags,
+        source: optimizedSendData.source
+      });
+      const sendProduct = {
+        ...product,
+        optimized_title: optimizedSendData.optimized_title,
+        optimized_description: optimizedSendData.optimized_description,
+        optimized_tags: optimizedSendData.optimized_tags,
+        email: sessionEmail(req),
+        optimization_mode: req.body.optimization_mode || product.optimization_mode || "safe_seo"
+      };
+      const updatePayload = directEtsyUpdatePayload(sendProduct);
+      const fields = Object.keys(updatePayload);
+      console.log("[SEND SELECTED ITEM]", { listing_id: listingId, fields });
+      console.log("[SEND DEBUG REQUEST]", {
+        listing_id: listingId,
+        payload: updatePayload
+      });
+      if (!fields.length) {
+        skipped += 1;
+        console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_optimized" });
+        results.push(normalizeSendResult({ listing_id: listingId, status: "skipped", reason: "not_optimized" }));
+        continue;
+      }
+      if (
+        updatePayload.title &&
+        updatePayload.title === sanitizeEtsyTitle(product.title || product.name || "") &&
+        !updatePayload.description &&
+        !Array.isArray(updatePayload.tags)
+      ) {
+        skipped += 1;
+        console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "no_optimized_changes" });
+        results.push(normalizeSendResult({ listing_id: listingId, status: "skipped", reason: "no_optimized_changes" }));
+        continue;
+      }
+      try {
+        await incrementAnalytics("optimization_started");
+        const result = await updateEtsyListingDirect(req, res, sendProduct);
+        if (result?.verified !== true || !result?.verification) {
+          const error = new Error("Etsy apply verification did not run.");
+          error.code = "verification_not_executed";
+          error.status = 500;
+          error.payload = {
+            listing_id: listingId,
+            result
+          };
+          throw error;
+        }
+        sent += 1;
+        console.log("[SEND SELECTED SUCCESS]", { listing_id: listingId });
+        results.push({
+          ...result,
+          listing_id: result.listing_id || listingId,
+          status: result.verified === false ? "failed" : result.status === "completed" ? "sent" : result.status,
+          updated_fields: result.updated_fields || fields
+        });
+        results[results.length - 1] = normalizeSendResult(results[results.length - 1]);
+      } catch (error) {
+        failed += 1;
+        const reason = sendFailureReasonWithMessage(error);
+        const statusCode = Number(error.status || error.payload?.etsy_status || 0) || null;
+        console.warn("[SEND SELECTED FAILED]", {
+          listing_id: listingId,
+          error: error instanceof Error ? error.message : String(error)
+        });
+        console.warn("[SEND DEBUG ERROR]", {
+          listing_id: listingId,
+          error: error instanceof Error ? error.message : String(error),
+          statusCode
+        });
+        console.log("[SEND DEBUG ETSY RESPONSE]", {
+          listing_id: listingId,
+          status: statusCode,
+          body: error?.payload || null
+        });
+        results.push({
+          listing_id: listingId,
+          status: "failed",
+          reason,
+          message: etsyErrorMessage(error?.payload?.etsy_body || error?.payload || {}, error instanceof Error ? error.message : String(error)),
+          etsy_response: error?.payload || null
+        });
+        results[results.length - 1] = normalizeSendResult(results[results.length - 1]);
+      }
     }
   } catch (error) {
-    const status = error?.status && Number(error.status) >= 400 ? Number(error.status) : 502;
-    const errorData = {
-      status: "failed",
-      send_method: directEtsyMode ? "etsy_api" : "make",
+    const status = error?.status === 401 || error?.status === 403 ? error.status : 502;
+    res.status(status).json(errorResponse(error?.code || "etsy_auth_failed", status === 401 || status === 403 ? "Etsy authorization expired. Please refresh sync." : error instanceof Error ? error.message : String(error), {
+      ok: false,
+      sent,
+      skipped,
+      failed: failed || 1,
       results,
-      etsy_response: error?.payload || null,
       session: sessionSummary(req.session, user, { dev_mode: devMode })
-    };
-    if (error?.code === "etsy_resource_not_found") {
-      Object.assign(errorData, error.payload || {});
-    }
-    res.status(status).json(errorResponse(error?.code || "etsy_update_failed", error instanceof Error ? error.message : String(error), errorData));
+    }));
     return;
   }
-  const completedCount = results.filter((item) => item.status === "completed" || item.status === "sent").length;
-  const updatedUser = !devMode && completedCount > 0 ? await consumeCredits(user, completedCount) : user;
-  res.json(successResponse({
-    status: results.every((item) => item.status === "completed" || item.status === "sent") ? (directEtsyMode ? "sent" : "completed") : "partial",
-    send_method: directEtsyMode ? "etsy_api" : "make",
+  console.log("[SEND SELECTED COMPLETE]", { sent, skipped, failed });
+  const updatedUser = !devMode && sent > 0 ? await consumeCredits(user, sent) : user;
+  res.json({
+    success: true,
+    ok: true,
+    sent,
+    skipped,
+    failed,
     results,
-    session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
-  }, directEtsyMode ? "Batch sent to Etsy" : "Batch processed"));
+    data: {
+      ok: true,
+      sent,
+      skipped,
+      failed,
+      results,
+      status: failed ? "partial_failed" : skipped ? "partial" : "sent",
+    send_method: directEtsyMode ? "etsy_api" : "make",
+      session: sessionSummary(req.session, updatedUser, { dev_mode: devMode })
+    },
+    message: directEtsyMode ? "Batch sent to Etsy" : "Batch processed"
+  });
 }
 
 app.post("/api/retry/:id", requireUser, async (req, res) => {
