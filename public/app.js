@@ -13,6 +13,10 @@ const listingImageRequestCache = new Map();
 let activeListingFilter = "all";
 let listingSearchQuery = "";
 let studioListingId = "";
+let authState = "idle";
+let authConfirmed = false;
+let lastToastKey = "";
+let lastToastAt = 0;
 const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
@@ -582,6 +586,11 @@ function setStatus(status) {
 
 function showToast(message, type = "success") {
   if (!toastStackEl) return;
+  const key = `${type}:${message}`;
+  const now = Date.now();
+  if (key === lastToastKey && now - lastToastAt < 2500) return;
+  lastToastKey = key;
+  lastToastAt = now;
   const toast = document.createElement("div");
   toast.className = `toast ${safeStatusClass(type)}`;
   toast.textContent = message;
@@ -590,6 +599,31 @@ function showToast(message, type = "success") {
     toast.classList.add("leaving");
     window.setTimeout(() => toast.remove(), 220);
   }, 3600);
+}
+
+function setAuthState(nextState, details = {}) {
+  authState = nextState;
+  console.log("[AUTH STATE]", { state: authState, ...details });
+  if (nextState === "activating_token") {
+    authConfirmed = false;
+    setStatus("Processing");
+    renderEtsyAuthStatus({ configured: true, connected: false, token_status: "activating", message: "Connecting your Etsy shop..." });
+  }
+  if (nextState === "loading_listings") {
+    setStatus("Processing");
+    renderProductsSkeleton();
+  }
+  if (["disconnected", "expired", "auth_error"].includes(nextState)) {
+    authConfirmed = false;
+    products = [];
+    etsyConnectionRequired = true;
+    renderProducts();
+    renderCommerceIntelligence();
+  }
+}
+
+function showAuthToast(message, type = "success") {
+  showToast(message, type);
 }
 
 function mountV2UxShell() {
@@ -673,7 +707,7 @@ function renderEtsyAuthStatus(status = {}) {
   const connected = Boolean(status.connected);
   const expired = Boolean(status.expired);
   const tokenStatus = status.token_status || "";
-  const badge = !configured ? "Not configured" : status.reconnect_required ? "Reconnect required" : tokenStatus === "refreshed" ? "Token refreshed" : expired ? "Token expired" : connected ? "Token active" : "Not connected";
+  const badge = tokenStatus === "activating" ? "Connecting your Etsy shop..." : tokenStatus === "loading" ? "Loading your Etsy listings..." : !configured ? "Not configured" : status.reconnect_required ? "Reconnect required" : tokenStatus === "refreshed" ? "Token refreshed" : expired ? "Token expired" : connected ? "Token active" : "Not connected";
   const badgeClass = !configured || expired || status.reconnect_required ? "failed" : connected ? "completed" : "queued";
   etsyAuthStatusEl.innerHTML = `
     <div class="auth-status-row"><span>Status</span><strong class="${badgeClass}">${escapeHtml(badge)}</strong></div>
@@ -717,6 +751,7 @@ async function refreshEtsyStatus() {
     const response = await fetch("/api/auth/status");
     const result = await parseJsonResponse(response);
     const status = unwrapResponse(result, result);
+    console.log("[AUTH STATUS RESPONSE]", status);
     renderEtsyAuthStatus(status);
     return status;
   } catch (error) {
@@ -728,6 +763,12 @@ async function refreshEtsyStatus() {
 
 async function syncEtsyListings() {
   console.log("Refresh Sync clicked");
+  if (!authConfirmed && authState !== "connected" && authState !== "listings_loaded") {
+    console.log("[LISTINGS AUTH FAILED]", { reason: "sync_without_confirmed_auth", authState });
+    setAuthState("disconnected");
+    showAuthToast("Reconnect Etsy Shop to refresh live listings.", "error");
+    return;
+  }
   setStatus("Processing");
   showToast("Refreshing Etsy sync...", "success");
   renderProductsSkeleton();
@@ -861,8 +902,11 @@ async function activateEtsyConnectToken() {
   const token = params.get("connect_token");
   const email = params.get("email");
   if (!token || !email) return false;
+  console.log("[CONNECT TOKEN FOUND]", { email, hasToken: Boolean(token) });
+  console.log("[ACTIVATE TOKEN START]");
+  setAuthState("activating_token");
   try {
-    const response = await fetch("/api/etsy/activate-token", {
+    const response = await fetch("/api/activate-token", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ token, email })
@@ -870,7 +914,15 @@ async function activateEtsyConnectToken() {
     const result = await parseJsonResponse(response);
     console.log("Etsy activate-token response", result);
     if (!response.ok || result?.success === false) {
-      showToast(result.message || "Etsy session activation failed.", "error");
+      console.log("[ACTIVATE TOKEN FAILED]", result);
+      setAuthState("auth_error", { error: result.error || "connect_token_invalid_or_expired" });
+      const cleanUrl = new URL(window.location.href);
+      cleanUrl.searchParams.delete("connect_token");
+      cleanUrl.searchParams.delete("email");
+      cleanUrl.searchParams.delete("etsy");
+      cleanUrl.searchParams.delete("message");
+      window.history.replaceState({}, "", cleanUrl.toString());
+      showAuthToast("Etsy connection expired. Please reconnect your Etsy Shop.", "error");
       return false;
     }
     const payload = unwrapResponse(result, result);
@@ -878,12 +930,19 @@ async function activateEtsyConnectToken() {
     const cleanUrl = new URL(window.location.href);
     cleanUrl.searchParams.delete("connect_token");
     cleanUrl.searchParams.delete("email");
+    cleanUrl.searchParams.delete("etsy");
+    cleanUrl.searchParams.delete("message");
     window.history.replaceState({}, "", cleanUrl.toString());
-    showToast("Etsy session activated. Loading listings...", "success");
+    authConfirmed = true;
+    setAuthState("connected", { shop_id: payload.shop_id || payload.etsy?.shop_id || "" });
+    console.log("[ACTIVATE TOKEN SUCCESS]", payload);
+    showAuthToast("Etsy shop connected", "success");
     return true;
   } catch (error) {
     debugLog("etsy activate token failed", error);
-    showToast("API unavailable. Etsy session activation failed.", "error");
+    console.log("[ACTIVATE TOKEN FAILED]", { error: error instanceof Error ? error.message : String(error) });
+    setAuthState("auth_error");
+    showAuthToast("Etsy connection expired. Please reconnect your Etsy Shop.", "error");
     return false;
   }
 }
@@ -2160,6 +2219,13 @@ async function refreshQueue() {
 }
 
 async function refreshListings() {
+  if (!authConfirmed && authState !== "connected" && authState !== "loading_listings" && authState !== "listings_loaded") {
+    console.log("[LISTINGS AUTH FAILED]", { reason: "auth_not_confirmed", authState });
+    setAuthState("disconnected");
+    return;
+  }
+  console.log("[LOAD LISTINGS AFTER AUTH CONFIRMED]");
+  setAuthState("loading_listings");
   setStatus("Processing");
   renderProductsSkeleton();
   try {
@@ -2173,6 +2239,10 @@ async function refreshListings() {
       products = [];
       etsyConnectionRequired = response.status === 401 || result?.error === "etsy_not_connected";
       etsySellerAccountRequired = response.status === 403 || result?.error === "seller_account_required";
+      if (etsyConnectionRequired) {
+        console.log("[LISTINGS AUTH FAILED]", result);
+        setAuthState("disconnected");
+      }
       renderProducts();
       renderCommerceIntelligence();
       if (etsySellerAccountRequired) {
@@ -2182,7 +2252,7 @@ async function refreshListings() {
       }
       if (etsyConnectionRequired) {
         await refreshEtsyStatus();
-        showToast("Connect your Etsy shop to load live listings.", "error");
+        showAuthToast("Reconnect Etsy Shop to load live listings.", "error");
         return;
       }
       showToast(result.message || "API unavailable. Etsy listings were not loaded.", "error");
@@ -2218,6 +2288,8 @@ async function refreshListings() {
     renderTopKpis(optimizationRecords);
     renderTimeline();
     setStatus("Completed");
+    setAuthState("listings_loaded", { count: products.length });
+    console.log("[LISTINGS LOADED]", { count: products.length });
     debugLog("listings loaded", { count: products.length });
     if (payload.listings && !payload.listings.length) showToast("No Etsy listings found yet.", "error");
   } catch (error) {
@@ -2487,8 +2559,9 @@ async function initializeDashboard() {
   if (dashboardInitialized) return;
   dashboardInitialized = true;
   debugLog("dashboard initialized");
-  await refreshEtsyStatus();
-  await refreshListings();
+  if (authConfirmed || authState === "connected" || authState === "listings_loaded") {
+    await refreshListings();
+  }
   await refreshLogs();
 }
 
@@ -2893,21 +2966,48 @@ queueEl?.addEventListener("click", async (event) => {
   await refreshQueue();
 });
 
-activateEtsyConnectToken().then(async () => refreshSession()).then(async (session) => {
-  if (session?.onboarding_completed && !session.email_required) onboardingPanelEl.hidden = true;
-  const requestedUpgrade = new URLSearchParams(window.location.search).get("upgrade");
-  const etsyState = new URLSearchParams(window.location.search).get("etsy");
+async function bootAuthFlow() {
+  console.log("[AUTH BOOT START]");
+  setAuthState("idle");
+  const params = new URLSearchParams(window.location.search);
+  const hasConnectToken = Boolean(params.get("connect_token"));
+  const requestedUpgrade = params.get("upgrade");
   if (requestedUpgrade) showUpgradeModal(requestedUpgrade);
-  const etsyMessage = new URLSearchParams(window.location.search).get("message");
-  if (etsyState === "connected") showToast("Etsy shop connected. Loading live listings...", "success");
-  if (etsyMessage) showToast(decodeURIComponent(etsyMessage), "error");
-  await refreshEtsyStatus();
+
+  if (hasConnectToken) {
+    const activated = await activateEtsyConnectToken();
+    const session = await refreshSession();
+    if (session?.onboarding_completed && !session.email_required) onboardingPanelEl.hidden = true;
+    if (!activated) return;
+    const status = await refreshEtsyStatus();
+    if (status?.connected && !status?.expired && !status?.reconnect_required) {
+      authConfirmed = true;
+      setAuthState("connected", { shop_id: status.shop_id || "" });
+      await refreshListings();
+    }
+    renderCommerceIntelligence();
+    return;
+  }
+
+  const session = await refreshSession();
+  if (session?.onboarding_completed && !session.email_required) onboardingPanelEl.hidden = true;
+  const etsyMessage = params.get("message");
+  if (etsyMessage) showAuthToast("Etsy connection failed. Please reconnect your Etsy Shop.", "error");
+  const status = await refreshEtsyStatus();
+  if (status?.connected && !status?.expired && !status?.reconnect_required) {
+    authConfirmed = true;
+    setAuthState("connected", { shop_id: status.shop_id || "" });
+  } else {
+    setAuthState(status?.expired ? "expired" : "disconnected");
+  }
   renderCommerceIntelligence();
-  if (session?.onboarding_completed && !session.email_required) {
+  if (session?.onboarding_completed && !session.email_required && authConfirmed) {
     await initializeDashboard();
   } else {
     products = [];
     renderProducts();
     renderCommerceIntelligence();
   }
-});
+}
+
+bootAuthFlow();

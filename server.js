@@ -3106,19 +3106,43 @@ app.get("/api/etsy/connect", startEtsyOAuth);
 app.get("/auth/etsy/callback", finishEtsyOAuth);
 app.get("/api/etsy/callback", finishEtsyOAuth);
 
-app.post("/api/etsy/activate-token", async (req, res) => {
-  const email = normalizeEmail(req.body.email);
-  const token = String(req.body.token || "").trim();
+async function handleActivateEtsyToken(req, res) {
+  const email = normalizeEmail(req.body.email || req.query.email);
+  const token = String(req.body.token || req.query.token || req.body.connect_token || req.query.connect_token || "").trim();
+  console.log("[ACTIVATE TOKEN REQUEST]", {
+    email,
+    has_token: Boolean(token),
+    path: req.path
+  });
   if (!email || !token) {
-    res.status(400).json(errorResponse("invalid_connect_token", "Missing Etsy connect token or email."));
+    console.log("[ACTIVATE TOKEN FAILED]", { email, reason: "missing_token_or_email" });
+    res.status(400).json(errorResponse("connect_token_invalid_or_expired", "Etsy connect token is invalid or expired.", {
+      success: false,
+      reconnect_required: true
+    }));
     return;
   }
   const users = await readUsers();
   const user = users.find((item) => normalizeEmail(item.email) === email);
   const tokenMatches = user?.etsy_connect_token && user.etsy_connect_token === token;
   const tokenActive = Number(user?.etsy_connect_token_expires || 0) > Date.now();
+  console.log("[ACTIVATE TOKEN LOOKUP]", {
+    email,
+    user_found: Boolean(user),
+    has_stored_token: Boolean(user?.etsy_connect_token),
+    token_matches: Boolean(tokenMatches),
+    token_active: Boolean(tokenActive),
+    has_etsy_auth: Boolean(user?.etsy_auth)
+  });
   if (!user || !tokenMatches || !tokenActive || !user.etsy_auth) {
-    res.status(401).json(errorResponse("invalid_connect_token", "Etsy connect token is invalid or expired."));
+    console.log("[ACTIVATE TOKEN FAILED]", {
+      email,
+      reason: !user ? "user_not_found" : !tokenMatches ? "token_mismatch" : !tokenActive ? "token_expired" : "missing_etsy_auth"
+    });
+    res.status(401).json(errorResponse("connect_token_invalid_or_expired", "Etsy connect token is invalid or expired.", {
+      success: false,
+      reconnect_required: true
+    }));
     return;
   }
   user.etsy_connect_token = "";
@@ -3131,11 +3155,36 @@ app.post("/api/etsy/activate-token", async (req, res) => {
   req.session.etsy_auth = user.etsy_auth;
   req.user = user;
   req.etsyAuth = user.etsy_auth;
+  console.log("[ACTIVATE TOKEN SUCCESS]", {
+    email,
+    shop_id: user.etsy_auth?.shop_id || "",
+    shop_name: user.etsy_auth?.shop_name || ""
+  });
   res.json(successResponse({
     status: "activated",
+    connected: true,
+    shop_id: user.etsy_auth?.shop_id || "",
+    shop_name: user.etsy_auth?.shop_name || "",
     auth_token: createAuthToken(user, user.etsy_auth),
     etsy: await etsyTokenStatus(user.etsy_auth)
   }, "Etsy session activated"));
+}
+
+app.post("/api/etsy/activate-token", handleActivateEtsyToken);
+app.post("/api/activate-token", handleActivateEtsyToken);
+
+app.get("/api/debug/auth-state", async (req, res) => {
+  const tokens = await resolveRequestEtsyAuth(req);
+  const listings = tokens.shop_id ? await readListingsCache(tokens.shop_id) : [];
+  res.json(successResponse({
+    session_exists: Boolean(req.session?.acopes_session_id || req.session?.email),
+    email_exists: Boolean(req.session?.email),
+    shop_id_exists: Boolean(tokens.shop_id),
+    access_token_exists: Boolean(tokens.access_token),
+    refresh_token_exists: Boolean(tokens.refresh_token),
+    expires_at: tokens.expires_at || null,
+    listing_count: tokens.shop_id ? listings.length : 0
+  }, "Auth debug state loaded"));
 });
 
 app.post("/api/etsy/disconnect", requireUser, async (req, res) => {
