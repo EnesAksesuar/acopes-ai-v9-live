@@ -2,6 +2,26 @@ let products = [];
 let optimizationRecords = [];
 let queueRecords = [];
 let logRecords = [];
+
+window.onerror = (message, source, lineno, colno, error) => {
+  console.error("[NULL SHOP_ID CRASH STACK]", {
+    message,
+    source,
+    lineno,
+    colno,
+    stack: error?.stack || ""
+  });
+};
+
+window.onunhandledrejection = (event) => {
+  const reason = event?.reason;
+  console.error("[NULL SHOP_ID CRASH STACK]", {
+    message: reason?.message || String(reason || "Unhandled promise rejection"),
+    stack: reason?.stack || "",
+    reason
+  });
+};
+
 let currentSession = null;
 let dashboardInitialized = false;
 let etsyConnectionRequired = false;
@@ -714,7 +734,7 @@ function getSafeEtsyState(response = {}) {
   const source = payload.etsy && typeof payload.etsy === "object" ? payload.etsy : payload;
   const safeEtsy = {
     connected: Boolean(source?.connected),
-    shop_id: String(source?.shop_id || ""),
+    shop_id: String(source?.["shop_id"] || ""),
     shop_name: String(source?.shop_name || ""),
     shop_url: String(source?.shop_url || ""),
     access_token_exists: Boolean(source?.access_token_exists),
@@ -731,6 +751,10 @@ function getSafeEtsyState(response = {}) {
   return safeEtsy;
 }
 
+function etsyShopId(etsyState = {}) {
+  return getSafeEtsyState(etsyState)["shop_id"];
+}
+
 function renderEtsyAuthStatus(status = {}) {
   status = getSafeEtsyState(status);
   if (!etsyAuthStatusEl) return;
@@ -738,11 +762,12 @@ function renderEtsyAuthStatus(status = {}) {
   const connected = Boolean(status.connected);
   const expired = Boolean(etsyConnectionRequired);
   const tokenStatus = status.token_status || "";
+  const displayShopId = etsyShopId(status);
   const badge = tokenStatus === "activating" ? "Connecting your Etsy shop..." : tokenStatus === "loading" ? "Loading your Etsy listings..." : !configured ? "Not configured" : etsyConnectionRequired ? "Reconnect required" : tokenStatus === "refreshed" ? "Token refreshed" : expired ? "Token expired" : connected ? "Token active" : "Not connected";
   const badgeClass = !configured || expired ? "failed" : connected ? "completed" : "queued";
   etsyAuthStatusEl.innerHTML = `
     <div class="auth-status-row"><span>Status</span><strong class="${badgeClass}">${escapeHtml(badge)}</strong></div>
-    <div class="auth-status-row"><span>Shop</span><strong>${escapeHtml(status.shop_name || status.shop_id || "No shop connected")}</strong></div>
+    <div class="auth-status-row"><span>Shop</span><strong>${escapeHtml(status.shop_name || displayShopId || "No shop connected")}</strong></div>
     ${status.shop_url ? `<div class="auth-status-row"><span>Shop URL</span><strong>${escapeHtml(status.shop_url)}</strong></div>` : ""}
     <div class="auth-status-row"><span>Scopes</span><strong>${escapeHtml(status.scopes || "listings_r shops_r")}</strong></div>
     <div class="auth-status-row"><span>Token</span><strong>${escapeHtml(badge)}</strong></div>
@@ -970,9 +995,10 @@ async function activateEtsyConnectToken() {
         window.history.replaceState({}, "", cleanUrl.toString());
         clearStoredAuthToken();
         authConfirmed = true;
-        setAuthState("connected", { shop_id: fallbackStatus?.shop_id || "" });
+        const fallbackShopId = etsyShopId(fallbackStatus);
+        setAuthState("connected", { shop_id: fallbackShopId });
         renderEtsyAuthStatus(fallbackStatus);
-        showAuthToast(fallbackStatus?.shop_id ? "Etsy shop connected" : "Etsy connected, syncing shop details...", "success");
+        showAuthToast(fallbackShopId ? "Etsy shop connected" : "Etsy connected, syncing shop details...", "success");
         return true;
       }
       setAuthState("auth_error", { error: result.error || "connect_token_invalid_or_expired" });
@@ -995,7 +1021,7 @@ async function activateEtsyConnectToken() {
     cleanUrl.searchParams.delete("message");
     window.history.replaceState({}, "", cleanUrl.toString());
     authConfirmed = true;
-    const connectedShopId = safeEtsy.shop_id;
+    const connectedShopId = etsyShopId(safeEtsy);
     setAuthState("connected", { shop_id: connectedShopId });
     console.log("[ACTIVATE TOKEN SUCCESS]", payload);
     showAuthToast(connectedShopId ? "Etsy shop connected" : "Etsy connected, syncing shop details...", "success");
@@ -3133,8 +3159,9 @@ async function bootAuthFlow() {
     const status = await refreshEtsyStatus();
     if (status?.connected) {
       authConfirmed = true;
-      setAuthState("connected", { shop_id: status?.shop_id || "" });
-      if (!status?.shop_id) showAuthToast("Etsy connected, syncing shop details...", "success");
+      const statusShopId = etsyShopId(status);
+      setAuthState("connected", { shop_id: statusShopId });
+      if (!statusShopId) showAuthToast("Etsy connected, syncing shop details...", "success");
       await refreshListings();
     }
     renderCommerceIntelligence();
@@ -3148,8 +3175,9 @@ async function bootAuthFlow() {
   const status = await refreshEtsyStatus();
   if (status?.connected) {
     authConfirmed = true;
-    setAuthState("connected", { shop_id: status?.shop_id || "" });
-    if (!status?.shop_id) showAuthToast("Etsy connected, syncing shop details...", "success");
+    const statusShopId = etsyShopId(status);
+    setAuthState("connected", { shop_id: statusShopId });
+    if (!statusShopId) showAuthToast("Etsy connected, syncing shop details...", "success");
   } else {
     setAuthState("disconnected");
   }
