@@ -709,8 +709,30 @@ function renderProductsSkeleton(count = 3) {
   `).join("");
 }
 
+function getSafeEtsyState(response = {}) {
+  const payload = unwrapResponse(response, response) || {};
+  const source = payload.etsy && typeof payload.etsy === "object" ? payload.etsy : payload;
+  const safeEtsy = {
+    connected: Boolean(source?.connected),
+    shop_id: String(source?.shop_id || ""),
+    shop_name: String(source?.shop_name || ""),
+    shop_url: String(source?.shop_url || ""),
+    access_token_exists: Boolean(source?.access_token_exists),
+    configured: source?.configured ?? true,
+    expired: Boolean(source?.expired),
+    scopes: source?.scopes || source?.scope || "listings_r shops_r",
+    reconnect_required: Boolean(source?.reconnect_required),
+    token_status: source?.token_status || (source?.connected ? "active" : "not_connected"),
+    source: source?.source || (source?.connected ? "normalized" : "none"),
+    error: source?.error || "",
+    draft_safe: source?.draft_safe ?? true
+  };
+  console.log("[SAFE ETSY STATE]", safeEtsy);
+  return safeEtsy;
+}
+
 function renderEtsyAuthStatus(status = {}) {
-  status = status || {};
+  status = getSafeEtsyState(status);
   if (!etsyAuthStatusEl) return;
   const configured = Boolean(status.configured);
   const connected = Boolean(status.connected);
@@ -759,11 +781,11 @@ async function refreshEtsyStatus() {
   try {
     let response = await fetch("/api/auth-status");
     let result = await parseJsonResponse(response);
-    let status = unwrapResponse(result, result);
+    let status = getSafeEtsyState(result);
     if ((!response.ok || !status?.connected || status?.reconnect_required) && storedAuthToken()) {
       const cookieOnlyResponse = await nativeFetch("/api/auth-status");
       const cookieOnlyResult = await parseJsonResponse(cookieOnlyResponse);
-      const cookieOnlyStatus = unwrapResponse(cookieOnlyResult, cookieOnlyResult);
+      const cookieOnlyStatus = getSafeEtsyState(cookieOnlyResult);
       if (cookieOnlyResponse.ok && cookieOnlyStatus?.connected) {
         clearStoredAuthToken();
         response = cookieOnlyResponse;
@@ -816,13 +838,14 @@ async function syncEtsyListings() {
       return;
     }
     const payload = unwrapResponse(result, result);
+    const safeEtsy = getSafeEtsyState(payload);
     etsyConnectionRequired = false;
     etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
     pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
-    renderEtsyAuthStatus(payload.etsy);
+    renderEtsyAuthStatus(safeEtsy);
     setStatus("Completed");
     showToast(`Etsy sync completed. ${products.length} listings loaded.`, "success");
   } catch (error) {
@@ -937,7 +960,7 @@ async function activateEtsyConnectToken() {
       console.log("[ACTIVATE TOKEN FAILED]", result);
       const fallbackStatusResponse = await nativeFetch("/api/auth-status");
       const fallbackStatusResult = await parseJsonResponse(fallbackStatusResponse);
-      const fallbackStatus = unwrapResponse(fallbackStatusResult, fallbackStatusResult);
+      const fallbackStatus = getSafeEtsyState(fallbackStatusResult);
       if (fallbackStatusResponse.ok && fallbackStatus?.connected) {
         const cleanUrl = new URL(window.location.href);
         cleanUrl.searchParams.delete("connect_token");
@@ -964,6 +987,7 @@ async function activateEtsyConnectToken() {
     }
     const payload = unwrapResponse(result, result);
     persistAuthToken(payload.auth_token || result.auth_token);
+    const safeEtsy = getSafeEtsyState(payload);
     const cleanUrl = new URL(window.location.href);
     cleanUrl.searchParams.delete("connect_token");
     cleanUrl.searchParams.delete("email");
@@ -971,7 +995,7 @@ async function activateEtsyConnectToken() {
     cleanUrl.searchParams.delete("message");
     window.history.replaceState({}, "", cleanUrl.toString());
     authConfirmed = true;
-    const connectedShopId = payload?.shop_id || payload?.etsy?.shop_id || "";
+    const connectedShopId = safeEtsy.shop_id;
     setAuthState("connected", { shop_id: connectedShopId });
     console.log("[ACTIVATE TOKEN SUCCESS]", payload);
     showAuthToast(connectedShopId ? "Etsy shop connected" : "Etsy connected, syncing shop details...", "success");
@@ -2365,7 +2389,7 @@ async function refreshListings() {
     seenOptimizationIds.clear();
     pendingOptimizationByListing.clear();
     listingOptimizationDebug.clear();
-    if (payload.etsy) renderEtsyAuthStatus(payload.etsy);
+    renderEtsyAuthStatus(safeEtsy);
     products.sort((a, b) => {
       if (a.details_status === "synced" && b.details_status !== "synced") return -1;
       if (a.details_status !== "synced" && b.details_status === "synced") return 1;

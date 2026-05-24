@@ -176,6 +176,34 @@ function publicEtsyAuth(tokens = {}) {
   };
 }
 
+function normalizeEtsyAuth(auth = {}) {
+  const source = auth && typeof auth === "object" ? auth : {};
+  const connected = Boolean(source.connected ?? (source.access_token || source.refresh_token || source.access_token_exists));
+  const normalized = {
+    connected,
+    shop_id: String(source.shop_id || ""),
+    shop_name: String(source.shop_name || ""),
+    shop_url: String(source.shop_url || ""),
+    access_token_exists: Boolean(source.access_token_exists || source.access_token),
+    configured: source.configured ?? etsyConfigured(),
+    expired: Boolean(source.expired),
+    scopes: source.scopes || source.scope || ETSY_SCOPES,
+    reconnect_required: Boolean(source.reconnect_required),
+    token_status: source.token_status || (connected ? "active" : "not_connected"),
+    source: source.source || (connected ? "normalized" : "none"),
+    error: source.error || "",
+    draft_safe: source.draft_safe ?? true
+  };
+  console.log("[AUTH NORMALIZED]", {
+    connected: normalized.connected,
+    shop_id: normalized.shop_id,
+    shop_name: normalized.shop_name,
+    access_token_exists: normalized.access_token_exists,
+    source: normalized.source
+  });
+  return normalized;
+}
+
 function etsyAuthCookieKey() {
   return nodeCrypto.createHash("sha256").update(String(SESSION_SECRET || "acopes2026secret")).digest();
 }
@@ -546,6 +574,7 @@ async function resolveRequestEtsyAuth(req) {
           req.session.etsy_auth = auth;
         }
         req.etsyAuth = auth;
+        normalizeEtsyAuth(auth);
         return auth;
       }
     } catch (error) {
@@ -553,12 +582,15 @@ async function resolveRequestEtsyAuth(req) {
     }
   }
   if (req.session?.etsy_auth?.access_token || req.session?.etsy_auth?.refresh_token) {
-    return publicEtsyAuth({ ...req.session.etsy_auth, source: req.session.etsy_auth.source || "session" });
+    const auth = publicEtsyAuth({ ...req.session.etsy_auth, source: req.session.etsy_auth.source || "session" });
+    normalizeEtsyAuth(auth);
+    return auth;
   }
   const cookieAuth = readEtsyAuthCookie(req);
   if (cookieAuth.access_token || cookieAuth.refresh_token) {
     if (req.session) req.session.etsy_auth = cookieAuth;
     req.etsyAuth = cookieAuth;
+    normalizeEtsyAuth(cookieAuth);
     return cookieAuth;
   }
   const user = req.user || await getSessionUser(req.session);
@@ -569,8 +601,10 @@ async function resolveRequestEtsyAuth(req) {
     const auth = publicEtsyAuth({ ...user.etsy_auth, source: user.etsy_auth.source || "user" });
     req.session.etsy_auth = auth;
     req.etsyAuth = auth;
+    normalizeEtsyAuth(auth);
     return auth;
   }
+  normalizeEtsyAuth({});
   return {};
 }
 
@@ -2194,6 +2228,11 @@ async function discoverEtsyShop(tokens, context = {}) {
   });
   await writeEtsyTokens(updated);
   if (context.req?.session) {
+    console.log("[SHOP DISCOVERY]", {
+      shop_id: updated.shop_id,
+      shop_name: updated.shop_name,
+      source: "discoverEtsyShop"
+    });
     context.req.session.etsy_shop_id = updated.shop_id;
     context.req.session.etsy_shop_name = updated.shop_name;
     context.req.session.etsy_shop_url = updated.shop_url;
@@ -2496,19 +2535,7 @@ async function resolveLiveListingForEtsyPut(product = {}, shopId = "") {
 
 async function safeEtsyStatus(tokens = {}) {
   const status = await etsyTokenStatus(tokens || {});
-  return status && typeof status === "object" ? status : {
-    configured: etsyConfigured(),
-    connected: false,
-    expired: false,
-    shop_id: "",
-    shop_name: "",
-    shop_url: "",
-    scopes: ETSY_SCOPES,
-    reconnect_required: false,
-    token_status: "not_connected",
-    source: "none",
-    error: ""
-  };
+  return normalizeEtsyAuth(status && typeof status === "object" ? status : {});
 }
 
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
@@ -3064,27 +3091,30 @@ app.get("/api/session", async (req, res) => {
 app.get("/api/etsy/status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
+    const etsy = await safeEtsyStatus(tokens);
+    res.json(successResponse({ ...etsy, etsy }, "Etsy auth status loaded"));
   } catch (error) {
-    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
+    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error), { etsy: normalizeEtsyAuth({ error: "etsy_status_failed" }) }));
   }
 });
 
 app.get("/api/auth-status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
+    const etsy = await safeEtsyStatus(tokens);
+    res.json(successResponse({ ...etsy, etsy }, "Etsy auth status loaded"));
   } catch (error) {
-    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
+    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error), { etsy: normalizeEtsyAuth({ error: "etsy_status_failed" }) }));
   }
 });
 
 app.get("/api/auth/status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
+    const etsy = await safeEtsyStatus(tokens);
+    res.json(successResponse({ ...etsy, etsy }, "Etsy auth status loaded"));
   } catch (error) {
-    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
+    res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error), { etsy: normalizeEtsyAuth({ error: "etsy_status_failed" }) }));
   }
 });
 
@@ -3219,7 +3249,8 @@ async function handleActivateEtsyToken(req, res) {
     console.log("[ACTIVATE TOKEN FAILED]", { email, reason: "missing_token_or_email" });
     res.status(400).json(errorResponse("connect_token_invalid_or_expired", "Etsy connect token is invalid or expired.", {
       success: false,
-      reconnect_required: true
+      reconnect_required: true,
+      etsy: normalizeEtsyAuth({ reconnect_required: true, error: "connect_token_invalid_or_expired" })
     }));
     return;
   }
@@ -3242,7 +3273,8 @@ async function handleActivateEtsyToken(req, res) {
     });
     res.status(401).json(errorResponse("connect_token_invalid_or_expired", "Etsy connect token is invalid or expired.", {
       success: false,
-      reconnect_required: true
+      reconnect_required: true,
+      etsy: normalizeEtsyAuth({ reconnect_required: true, error: "connect_token_invalid_or_expired" })
     }));
     return;
   }
@@ -3262,18 +3294,18 @@ async function handleActivateEtsyToken(req, res) {
     shop_id: user.etsy_auth?.shop_id || "",
     shop_name: user.etsy_auth?.shop_name || ""
   });
-  const etsy = await safeEtsyStatus(user.etsy_auth);
+  const etsy = normalizeEtsyAuth(await safeEtsyStatus(user.etsy_auth));
   res.json(successResponse({
     status: "activated",
     connected: true,
-    shop_id: etsy.shop_id || user.etsy_auth?.shop_id || "",
-    shop_name: etsy.shop_name || user.etsy_auth?.shop_name || "",
+    shop_id: etsy.shop_id,
+    shop_name: etsy.shop_name,
     auth_token: createAuthToken(user, user.etsy_auth),
     etsy: {
       ...etsy,
       connected: true,
-      shop_id: etsy.shop_id || user.etsy_auth?.shop_id || "",
-      shop_name: etsy.shop_name || user.etsy_auth?.shop_name || ""
+      shop_id: etsy.shop_id,
+      shop_name: etsy.shop_name
     }
   }, "Etsy session activated"));
 }
@@ -3298,18 +3330,18 @@ app.get("/api/debug/auth-state", async (req, res) => {
 app.post("/api/etsy/disconnect", requireUser, async (req, res) => {
   clearEtsyAuthCookie(res);
   if (req.user?.id) await updateUser(req.user.id, { etsy_auth: null });
-  res.json(successResponse(await etsyTokenStatus(), "Etsy disconnected"));
+  res.json(successResponse({ etsy: normalizeEtsyAuth({ connected: false }) }, "Etsy disconnected"));
 });
 
 app.post("/api/etsy/sync", requireUser, async (req, res) => {
   try {
     if (!etsyConfigured()) {
-      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", await etsyTokenStatus(req.etsyAuth || {})));
+      res.status(503).json(errorResponse("etsy_not_configured", "Etsy API is not configured.", { etsy: normalizeEtsyAuth({ error: "etsy_not_configured" }) }));
       return;
     }
     const userTokens = await resolveRequestEtsyAuth(req);
     if (!userTokens.access_token) {
-      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
+      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: normalizeEtsyAuth(await safeEtsyStatus(userTokens)) }));
       return;
     }
     const listings = await syncEtsyListings(userTokens, res, req);
@@ -3317,7 +3349,7 @@ app.post("/api/etsy/sync", requireUser, async (req, res) => {
       status: "completed",
       source: "etsy_api",
       listings,
-      etsy: await etsyTokenStatus(req.etsyAuth || userTokens)
+      etsy: normalizeEtsyAuth(await safeEtsyStatus(req.etsyAuth || userTokens))
     }, "Etsy listings synced"));
   } catch (error) {
     const isRefreshFailure = error?.code === "token_refresh_failed" || error?.code === "missing_refresh_token";
@@ -3326,7 +3358,7 @@ app.post("/api/etsy/sync", requireUser, async (req, res) => {
     res.status(status).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: normalizeEtsyAuth({ ...(await safeEtsyStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required", error: errorCode }) }
     ));
   }
 });
@@ -3335,7 +3367,7 @@ app.post("/api/etsy/refresh-sync", requireUser, async (req, res) => {
   try {
     const userTokens = await resolveRequestEtsyAuth(req);
     if (!userTokens.access_token) {
-      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: await etsyTokenStatus(userTokens) }));
+      res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", { listings: [], etsy: normalizeEtsyAuth(await safeEtsyStatus(userTokens)) }));
       return;
     }
     const token = await ensureValidEtsyToken(userTokens, res, req);
@@ -3353,14 +3385,14 @@ app.post("/api/etsy/refresh-sync", requireUser, async (req, res) => {
       status: "completed",
       source: "etsy_refresh_sync",
       listings,
-      etsy: await etsyTokenStatus(token)
+      etsy: normalizeEtsyAuth(await safeEtsyStatus(token))
     }, "Etsy refresh sync completed"));
   } catch (error) {
     const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : error?.code === "missing_refresh_token" ? "missing_refresh_token" : error?.code === "token_refresh_failed" ? "token_refresh_failed" : "etsy_sync_failed";
     res.status(errorCode === "seller_account_required" ? 403 : errorCode === "etsy_sync_failed" ? 502 : 401).json(errorResponse(
       errorCode,
       error instanceof Error ? error.message : String(error),
-      { etsy: { ...(await etsyTokenStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required" } }
+      { etsy: normalizeEtsyAuth({ ...(await safeEtsyStatus(req.etsyAuth || {})), reconnect_required: true, token_status: "reconnect_required", error: errorCode }) }
     ));
   }
 });
@@ -3520,6 +3552,7 @@ app.post("/api/clear-stale-queue", requireUser, async (req, res) => {
 app.get("/api/listings", requireUser, async (req, res) => {
   try {
     const userTokens = await resolveRequestEtsyAuth(req);
+    console.log("[LISTINGS AUTH STATE]", normalizeEtsyAuth(userTokens));
     etsyDebug("Listings auth snapshot", {
       hasAccessToken: Boolean(userTokens.access_token),
       hasRefreshToken: Boolean(userTokens.refresh_token),
@@ -3531,7 +3564,7 @@ app.get("/api/listings", requireUser, async (req, res) => {
       res.status(401).json(errorResponse("etsy_not_connected", "Please connect your Etsy shop", {
         status: "failed",
         listings: [],
-        etsy: await etsyTokenStatus(userTokens)
+        etsy: normalizeEtsyAuth(await safeEtsyStatus(userTokens))
       }));
       return;
     }
@@ -3565,7 +3598,7 @@ app.get("/api/listings", requireUser, async (req, res) => {
     res.json(successResponse({
       status: "completed",
       source: "etsy_api",
-      etsy: await etsyTokenStatus(tokens),
+      etsy: normalizeEtsyAuth(await safeEtsyStatus(tokens)),
       listings
     }, "Etsy listings synced"));
   } catch (error) {
@@ -3573,7 +3606,8 @@ app.get("/api/listings", requireUser, async (req, res) => {
     const errorCode = error?.code === "seller_account_required" ? "seller_account_required" : status === 401 ? "etsy_auth_required" : "listings_failed";
     res.status(status).json(errorResponse(errorCode, error instanceof Error ? error.message : String(error), {
       status: "failed",
-      error: error instanceof Error ? error.message : String(error)
+      error: error instanceof Error ? error.message : String(error),
+      etsy: normalizeEtsyAuth({ error: errorCode, reconnect_required: status === 401 })
     }));
   }
 });
