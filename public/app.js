@@ -67,13 +67,18 @@ function clearStoredAuthToken() {
   }
 }
 
-window.fetch = (input, init = {}) => {
+window.fetch = async (input, init = {}) => {
   const url = typeof input === "string" ? input : input?.url || "";
   if (!String(url).startsWith("/api/")) return nativeFetch(input, init);
   const headers = new Headers(init.headers || {});
   const token = storedAuthToken();
   if (token && !headers.has("Authorization")) headers.set("Authorization", `Bearer ${token}`);
-  return nativeFetch(input, { ...init, headers });
+  const response = await nativeFetch(input, { ...init, headers });
+  // If the server silently refreshed the Etsy token it returns a new JWT.
+  // Persist it immediately so the next request uses the fresh refresh_token.
+  const freshToken = response.headers.get("X-Auth-Token");
+  if (freshToken) persistAuthToken(freshToken);
+  return response;
 };
 
 const productsEl = document.querySelector("#products");

@@ -563,36 +563,45 @@ async function getSessionUser(session) {
 async function resolveRequestEtsyAuth(req) {
   const header = String(req?.headers?.authorization || "");
   const match = header.match(/^Bearer\s+(.+)$/i);
+  let jwtPayload = null;
+  let jwtAuth = null;
   if (match) {
     try {
-      const payload = jwt.verify(match[1], SESSION_SECRET);
-      if (payload?.etsy_auth?.access_token || payload?.etsy_auth?.refresh_token) {
-        const auth = publicEtsyAuth({ ...payload.etsy_auth, source: "jwt" });
-        if (req.session) {
-          if (payload.email) req.session.email = normalizeEmail(payload.email);
-          if (payload.user_id) req.session.user_id = payload.user_id;
-          req.session.etsy_auth = auth;
-        }
-        req.etsyAuth = auth;
-        normalizeEtsyAuth(auth);
-        return auth;
+      jwtPayload = jwt.verify(match[1], SESSION_SECRET);
+      if (jwtPayload?.etsy_auth?.access_token || jwtPayload?.etsy_auth?.refresh_token) {
+        jwtAuth = publicEtsyAuth({ ...jwtPayload.etsy_auth, source: "jwt" });
       }
     } catch (error) {
       console.log("[JWT ETSY AUTH] invalid token", { message: error instanceof Error ? error.message : String(error) });
     }
   }
+
+  // Cookie may carry fresher tokens than the JWT (e.g. after a silent token refresh).
+  // Prefer whichever has the later expires_at so a refreshed cookie beats a stale JWT.
+  const cookieAuth = readEtsyAuthCookie(req);
+  const cookieExpiresAt = Number(cookieAuth.expires_at || 0);
+  const jwtExpiresAt = Number(jwtAuth?.expires_at || 0);
+  const useCookie = Boolean(cookieAuth.access_token || cookieAuth.refresh_token) && cookieExpiresAt > jwtExpiresAt;
+  const primaryAuth = useCookie ? cookieAuth : jwtAuth;
+
+  if (primaryAuth) {
+    if (req.session) {
+      if (jwtPayload?.email) req.session.email = normalizeEmail(jwtPayload.email);
+      if (jwtPayload?.user_id) req.session.user_id = jwtPayload.user_id;
+      req.session.etsy_auth = primaryAuth;
+    }
+    req.etsyAuth = primaryAuth;
+    normalizeEtsyAuth(primaryAuth);
+    console.log("[RESOLVE ETSY AUTH]", { source: primaryAuth.source, shop_id: primaryAuth.shop_id || "", useCookie });
+    return primaryAuth;
+  }
+
   if (req.session?.etsy_auth?.access_token || req.session?.etsy_auth?.refresh_token) {
     const auth = publicEtsyAuth({ ...req.session.etsy_auth, source: req.session.etsy_auth.source || "session" });
     normalizeEtsyAuth(auth);
     return auth;
   }
-  const cookieAuth = readEtsyAuthCookie(req);
-  if (cookieAuth.access_token || cookieAuth.refresh_token) {
-    if (req.session) req.session.etsy_auth = cookieAuth;
-    req.etsyAuth = cookieAuth;
-    normalizeEtsyAuth(cookieAuth);
-    return cookieAuth;
-  }
+
   const user = req.user || await getSessionUser(req.session);
   if (user?.etsy_auth?.access_token || user?.etsy_auth?.refresh_token) {
     req.user = user;
@@ -604,6 +613,7 @@ async function resolveRequestEtsyAuth(req) {
     normalizeEtsyAuth(auth);
     return auth;
   }
+
   normalizeEtsyAuth({});
   return {};
 }
@@ -1817,18 +1827,49 @@ function normalizeListing(listing = {}) {
 }
 
 async function readEtsyTokens() {
-  etsyDebug("Etsy auth loaded", {
-    source: "session_user_only",
-    hasAccessToken: false,
-    hasRefreshToken: false,
-    shop_id: "",
-    shop_name: ""
-  });
+  try {
+    const raw = await fs.readFile(etsyTokensPath, "utf8");
+    const tokens = parseJsonText(raw, null);
+    if (tokens?.access_token || tokens?.refresh_token) {
+      etsyDebug("Etsy auth loaded", {
+        source: "runtime_file",
+        hasAccessToken: Boolean(tokens.access_token),
+        hasRefreshToken: Boolean(tokens.refresh_token),
+        shop_id: tokens.shop_id || "",
+        shop_name: tokens.shop_name || ""
+      });
+      return tokens;
+    }
+  } catch {
+    // File absent on cold start — fall through to env vars.
+  }
+  if (ETSY_ACCESS_TOKEN_ENV || ETSY_REFRESH_TOKEN_ENV) {
+    etsyDebug("Etsy auth loaded", {
+      source: "env_vars",
+      hasAccessToken: Boolean(ETSY_ACCESS_TOKEN_ENV),
+      hasRefreshToken: Boolean(ETSY_REFRESH_TOKEN_ENV),
+      shop_id: ETSY_SHOP_ID_ENV || "",
+      shop_name: FALLBACK_SHOP_NAME || ""
+    });
+    return {
+      access_token: ETSY_ACCESS_TOKEN_ENV,
+      refresh_token: ETSY_REFRESH_TOKEN_ENV,
+      expires_at: ETSY_TOKEN_EXPIRES_AT_ENV ? Number(ETSY_TOKEN_EXPIRES_AT_ENV) : 0,
+      shop_id: ETSY_SHOP_ID_ENV,
+      shop_name: FALLBACK_SHOP_NAME
+    };
+  }
+  etsyDebug("Etsy auth loaded", { source: "none", hasAccessToken: false, hasRefreshToken: false });
   return {};
 }
 
 async function writeEtsyTokens(tokens) {
-  return tokens || {};
+  try {
+    await writeJsonFile(etsyTokensPath, tokens);
+  } catch (err) {
+    etsyDebug("writeEtsyTokens failed", { error: err instanceof Error ? err.message : String(err) });
+  }
+  return tokens;
 }
 
 async function readListingsMeta() {
@@ -1972,7 +2013,12 @@ async function ensureValidEtsyToken(tokens = null, res = null, req = null) {
     });
     tokens = await refreshEtsyToken(tokens);
     if (res) setEtsyAuthCookie(res, tokens);
-    if (req?.session) await saveUserEtsyAuth(req.session, tokens);
+    if (req?.session) {
+      await saveUserEtsyAuth(req.session, tokens);
+      // Signal to the route handler that a new JWT should be issued to the client
+      // so localStorage gets updated and the old refresh_token is not replayed.
+      req._etsyTokensRefreshed = true;
+    }
   }
   else if (tokens.last_refresh_status !== "active") {
     tokens = { ...tokens, last_refresh_status: "active" };
@@ -3569,16 +3615,25 @@ app.get("/api/listings", requireUser, async (req, res) => {
       return;
     }
     const validTokens = await ensureValidEtsyToken(userTokens, res, req);
-    const sessionShopId = req.session?.etsy_shop_id || "";
-    const sessionShopName = req.session?.etsy_shop_name || "";
-    const tokens = sessionShopId
+    // Prefer session etsy_shop_id (set by discoverEtsyShop), then fall back to the
+    // shop_id already present in the resolved tokens (e.g. from JWT or cookie).
+    const sessionShopId = req.session?.etsy_shop_id || validTokens.shop_id || "";
+    const sessionShopName = req.session?.etsy_shop_name || validTokens.shop_name || "";
+    const tokens = (sessionShopId && sessionShopName)
       ? {
           ...validTokens,
           shop_id: String(sessionShopId),
-          shop_name: sessionShopName || validTokens.shop_name || FALLBACK_SHOP_NAME,
+          shop_name: sessionShopName || FALLBACK_SHOP_NAME,
           shop_url: req.session?.etsy_shop_url || validTokens.shop_url || ""
         }
       : await discoverEtsyShop(validTokens, { req, res });
+    if (!tokens.shop_id) {
+      res.status(502).json(errorResponse("listings_failed", "Could not resolve Etsy shop ID. Please reconnect your Etsy shop.", {
+        status: "failed",
+        etsy: normalizeEtsyAuth({ error: "shop_id_missing", reconnect_required: true })
+      }));
+      return;
+    }
     const rawListings = await fetchActiveEtsyListingsWithImages(tokens, { req, res });
     const listings = rawListings.map((listing) => normalizeListing({
       ...listing,
@@ -3595,11 +3650,22 @@ app.get("/api/listings", requireUser, async (req, res) => {
       shop_name: tokens.shop_name,
       shop_url: tokens.shop_url
     });
+    // If the Etsy token was silently refreshed, issue a new JWT so the client can
+    // update its stored Bearer token and avoid replaying the old refresh_token.
+    let freshAuthToken = null;
+    if (req._etsyTokensRefreshed) {
+      const refreshedUser = await getSessionUser(req.session);
+      if (refreshedUser) {
+        freshAuthToken = createAuthToken(refreshedUser, req.session.etsy_auth || tokens);
+        res.setHeader("X-Auth-Token", freshAuthToken);
+      }
+    }
     res.json(successResponse({
       status: "completed",
       source: "etsy_api",
       etsy: normalizeEtsyAuth(await safeEtsyStatus(tokens)),
-      listings
+      listings,
+      ...(freshAuthToken ? { auth_token: freshAuthToken } : {})
     }, "Etsy listings synced"));
   } catch (error) {
     const status = error?.status === 401 ? 401 : error?.status === 403 ? 403 : 502;
