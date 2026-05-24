@@ -2206,7 +2206,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   }
 
   const verifyPath = `/listings/${encodeURIComponent(liveListingId)}`;
-const putPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
+const putPath = `/listings/${encodeURIComponent(liveListingId)}`;
 const verifyEndpoint = `${ETSY_API_BASE}${verifyPath}`;
 
   console.log("[ETSY VERIFY LISTING GET]", {
