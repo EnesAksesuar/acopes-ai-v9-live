@@ -2180,7 +2180,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     error.status = 401;
     throw error;
   }
-  const shopId = normalizeListingId(sessionAuthShopId);
+  const shopId = normalizeListingId(sessionAuthShopId || requestAuthShopId || tokens.shop_id);
   if (!/^\d+$/.test(shopId)) {
     const error = new Error("Invalid Etsy shop_id. Please reconnect your Etsy shop to grant write permissions.");
     error.code = "invalid_shop_id";
@@ -2206,7 +2206,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   }
 
   const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
-  const verifyEndpoint = `${ETSY_API_BASE}${listingPath}`;
+  const etsyUpdateBase = ETSY_API_FALLBACK_BASE;
+  const verifyEndpoint = `${etsyUpdateBase}${listingPath}`;
   console.log("[ETSY VERIFY LISTING GET]", {
     url: verifyEndpoint,
     shop_id: shopId,
@@ -2254,8 +2255,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     throw error;
   }
 
-  let endpoint = `${ETSY_API_BASE}${listingPath}`;
-  console.log("[ETSY PUT BASE USED]", ETSY_API_BASE);
+  let endpoint = `${etsyUpdateBase}${listingPath}`;
+  console.log("[ETSY PUT BASE USED]", etsyUpdateBase);
   console.log("[ETSY PUT URL]", endpoint);
   console.log("[ETSY SHOP ID]", shopId);
   console.log("[ETSY LISTING ID]", liveListingId);
@@ -2287,8 +2288,8 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     payload = responseText;
   }
   if (!response.ok && response.status === 404) {
-    const fallbackEndpoint = `${ETSY_API_FALLBACK_BASE}${listingPath}`;
-    console.log("[ETSY PUT BASE USED]", ETSY_API_FALLBACK_BASE);
+    const fallbackEndpoint = `${etsyUpdateBase}${listingPath}`;
+    console.log("[ETSY PUT BASE USED]", etsyUpdateBase);
     console.log("[ETSY PUT URL]", fallbackEndpoint);
     response = await fetch(fallbackEndpoint, {
       method: "PUT",
