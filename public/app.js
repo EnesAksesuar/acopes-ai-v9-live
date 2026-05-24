@@ -80,6 +80,10 @@ const etsyConnectBannerEl = document.querySelector("#etsyConnectBanner");
 const connectEtsyBtn = document.querySelector("#connectEtsy");
 const syncEtsyListingsBtn = document.querySelector("#syncEtsyListings");
 const disconnectEtsyBtn = document.querySelector("#disconnectEtsy");
+if (sendBatchBtn) {
+  sendBatchBtn.title = "Direct Etsy update coming soon - use Copy button for now";
+  sendBatchBtn.setAttribute("aria-label", "Send Selected Batch. Direct Etsy update coming soon - use Copy button for now");
+}
 const seenOptimizationIds = new Set();
 const rewriteModesByRecord = new Map();
 const rewriteModeDetails = {
@@ -910,6 +914,64 @@ function optimizedTagsFrom(after = {}) {
   return Array.isArray(after?.tags) && after.tags.length ? after.tags : Array.isArray(after?.optimized_tags) ? after.optimized_tags : [];
 }
 
+function latestOptimizationForListing(listingId = "") {
+  const normalizedId = String(listingId || "");
+  return optimizationRecords.find((record) => String(record.listing_id || "") === normalizedId && recordOutputValid(record));
+}
+
+function optimizedClipboardPayload(listingId = "") {
+  const record = latestOptimizationForListing(listingId);
+  const product = liveListingById(listingId) || products.find((item) => String(item.listing_id || "") === String(listingId || "")) || {};
+  const after = record?.after || {};
+  const title = optimizedTitleFrom(after, product);
+  const tags = optimizedTagsFrom(after);
+  const description = optimizedDescriptionFrom(after) || product.optimized_description || product.description || "";
+  if (!title && !tags.length && !description) return "";
+  return [
+    `TITLE: ${title}`,
+    "",
+    `TAGS: ${tags.join(", ")}`,
+    "",
+    `DESCRIPTION: ${description}`
+  ].join("\n");
+}
+
+async function copyOptimizedData(listingId = "") {
+  const text = optimizedClipboardPayload(listingId);
+  if (!text) {
+    showToast("Generate an optimization before copying.", "error");
+    return;
+  }
+  try {
+    if (navigator.clipboard?.writeText && window.isSecureContext) {
+      await navigator.clipboard.writeText(text);
+    } else {
+      const textarea = document.createElement("textarea");
+      textarea.value = text;
+      textarea.setAttribute("readonly", "");
+      textarea.style.position = "fixed";
+      textarea.style.left = "-9999px";
+      document.body.appendChild(textarea);
+      textarea.select();
+      document.execCommand("copy");
+      textarea.remove();
+    }
+    showToast("Copied! Paste directly into Etsy", "success");
+  } catch (error) {
+    debugLog("copy optimized data failed", error);
+    showToast("Copy failed. Try again from the optimization card.", "error");
+  }
+}
+
+function openEtsyListingEditor(listingId = "") {
+  const normalizedId = String(listingId || "").trim();
+  if (!normalizedId) {
+    showToast("Listing ID missing. Refresh Etsy Listings first.", "error");
+    return;
+  }
+  window.open(`https://www.etsy.com/your/listings/${encodeURIComponent(normalizedId)}/edit`, "_blank", "noopener,noreferrer");
+}
+
 function detectJewelryProductType(listing = {}) {
   const text = `${listing.type || ""} ${listing.title || ""} ${listing.name || ""} ${listing.description || ""} ${(listing.tags || []).join(" ")}`.toLowerCase();
   if (/\bnecklace\b|\bchain necklace\b|\bpendant necklace\b/.test(text)) return "necklace";
@@ -1294,6 +1356,10 @@ function renderProducts() {
               <div class="optimized-preview">
                 <p>${escapeHtml(optimizedDescription)}</p>
                 <small>${escapeList(optimizedTags)}</small>
+                <div class="optimization-actions inline-actions">
+                  <button type="button" class="ghost" data-copy-optimized="${escapeAttribute(product.listing_id)}">Copy Title & Tags</button>
+                  <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy</button>
+                </div>
               </div>
             ` : ""}
             ${debugInfo ? `
@@ -1326,7 +1392,13 @@ function renderProducts() {
               `;
             })()}
           </div>
-          ${optimization?.status === "completed" ? `<b class="completed-badge">Optimization completed</b>` : ""}
+          ${optimization?.status === "completed" ? `
+            <b class="completed-badge">Optimization completed</b>
+            <div class="optimization-actions inline-actions">
+              <button type="button" class="ghost" data-copy-optimized="${escapeAttribute(product.listing_id)}">Copy Title & Tags</button>
+              <button type="button" class="ghost" data-open-etsy="${escapeAttribute(product.listing_id)}">Open in Etsy ↗</button>
+            </div>
+          ` : ""}
           ${optimization?.status === "failed" ? `<button class="retry-optimization" data-retry-optimization="${escapeAttribute(optimization.id)}">Retry failed optimization</button>` : ""}
         </label>
       `;
@@ -1472,6 +1544,8 @@ function renderOptimizations(records) {
           </details>
           <div class="optimization-actions">
             <button class="ghost toggle-view" data-toggle="${escapeAttribute(record.id)}">Show before</button>
+            <button class="ghost" data-copy-optimized="${escapeAttribute(record.listing_id)}">Copy Title & Tags</button>
+            <button class="ghost" data-open-etsy="${escapeAttribute(record.listing_id)}">Open in Etsy ↗</button>
             <button data-approve="${escapeAttribute(record.id)}">Approve Draft</button>
           </div>
         </article>
@@ -2018,6 +2092,18 @@ optimizationsEl?.addEventListener("click", async (event) => {
     await refreshOptimizations();
     return;
   }
+  const copyButton = event.target.closest("[data-copy-optimized]");
+  if (copyButton) {
+    event.preventDefault();
+    await copyOptimizedData(copyButton.dataset.copyOptimized);
+    return;
+  }
+  const openButton = event.target.closest("[data-open-etsy]");
+  if (openButton) {
+    event.preventDefault();
+    openEtsyListingEditor(openButton.dataset.openEtsy);
+    return;
+  }
   const preview = event.target.closest("[data-preview]");
   if (preview) {
     modalImageEl.src = preview.dataset.preview;
@@ -2046,6 +2132,18 @@ optimizationsEl?.addEventListener("click", async (event) => {
 });
 
 productsEl?.addEventListener("click", async (event) => {
+  const copyButton = event.target.closest("[data-copy-optimized]");
+  if (copyButton) {
+    event.preventDefault();
+    await copyOptimizedData(copyButton.dataset.copyOptimized);
+    return;
+  }
+  const openButton = event.target.closest("[data-open-etsy]");
+  if (openButton) {
+    event.preventDefault();
+    openEtsyListingEditor(openButton.dataset.openEtsy);
+    return;
+  }
   const preview = event.target.closest("[data-preview]");
   if (preview) {
     event.preventDefault();
