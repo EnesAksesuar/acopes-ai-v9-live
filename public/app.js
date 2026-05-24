@@ -702,6 +702,7 @@ function renderProductsSkeleton(count = 3) {
 }
 
 function renderEtsyAuthStatus(status = {}) {
+  status = status || {};
   if (!etsyAuthStatusEl) return;
   const configured = Boolean(status.configured);
   const connected = Boolean(status.connected);
@@ -934,9 +935,10 @@ async function activateEtsyConnectToken() {
     cleanUrl.searchParams.delete("message");
     window.history.replaceState({}, "", cleanUrl.toString());
     authConfirmed = true;
-    setAuthState("connected", { shop_id: payload.shop_id || payload.etsy?.shop_id || "" });
+    const connectedShopId = payload?.shop_id || payload?.etsy?.shop_id || "";
+    setAuthState("connected", { shop_id: connectedShopId });
     console.log("[ACTIVATE TOKEN SUCCESS]", payload);
-    showAuthToast("Etsy shop connected", "success");
+    showAuthToast(connectedShopId ? "Etsy shop connected" : "Etsy connected, syncing shop details...", "success");
     return true;
   } catch (error) {
     debugLog("etsy activate token failed", error);
@@ -3071,7 +3073,8 @@ async function bootAuthFlow() {
     const status = await refreshEtsyStatus();
     if (status?.connected && !status?.expired && !status?.reconnect_required) {
       authConfirmed = true;
-      setAuthState("connected", { shop_id: status.shop_id || "" });
+      setAuthState("connected", { shop_id: status?.shop_id || "" });
+      if (!status?.shop_id) showAuthToast("Etsy connected, syncing shop details...", "success");
       await refreshListings();
     }
     renderCommerceIntelligence();
@@ -3085,7 +3088,8 @@ async function bootAuthFlow() {
   const status = await refreshEtsyStatus();
   if (status?.connected && !status?.expired && !status?.reconnect_required) {
     authConfirmed = true;
-    setAuthState("connected", { shop_id: status.shop_id || "" });
+    setAuthState("connected", { shop_id: status?.shop_id || "" });
+    if (!status?.shop_id) showAuthToast("Etsy connected, syncing shop details...", "success");
   } else {
     setAuthState(status?.expired ? "expired" : "disconnected");
   }

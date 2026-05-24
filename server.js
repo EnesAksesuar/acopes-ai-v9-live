@@ -1733,7 +1733,7 @@ function etsyTokenUsable(tokens = {}) {
 }
 
 async function etsyTokenStatus(tokens = null) {
-  tokens = tokens || await readEtsyTokens();
+  tokens = tokens || await readEtsyTokens() || {};
   if (!etsyConfigured()) etsyDebug("Missing Etsy config", { hasClientId: Boolean(ETSY_CLIENT_ID), hasRedirectUri: Boolean(ETSY_REDIRECT_URI) });
   if (!tokens.access_token) etsyDebug("Missing Etsy access token", { hasRefreshToken: Boolean(tokens.refresh_token) });
   if (!tokens.refresh_token) etsyDebug("Missing Etsy refresh token", { hasAccessToken: Boolean(tokens.access_token) });
@@ -2403,6 +2403,23 @@ async function resolveLiveListingForEtsyPut(product = {}, shopId = "") {
   throw error;
 }
 
+async function safeEtsyStatus(tokens = {}) {
+  const status = await etsyTokenStatus(tokens || {});
+  return status && typeof status === "object" ? status : {
+    configured: etsyConfigured(),
+    connected: false,
+    expired: false,
+    shop_id: "",
+    shop_name: "",
+    shop_url: "",
+    scopes: ETSY_SCOPES,
+    reconnect_required: false,
+    token_status: "not_connected",
+    source: "none",
+    error: ""
+  };
+}
+
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
   const endpoint = `${ETSY_API_FALLBACK_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
   console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
@@ -2956,7 +2973,7 @@ app.get("/api/session", async (req, res) => {
 app.get("/api/etsy/status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
+    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
   }
@@ -2965,7 +2982,7 @@ app.get("/api/etsy/status", async (req, res) => {
 app.get("/api/auth-status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
+    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
   }
@@ -2974,7 +2991,7 @@ app.get("/api/auth-status", async (req, res) => {
 app.get("/api/auth/status", async (req, res) => {
   try {
     const tokens = await resolveRequestEtsyAuth(req);
-    res.json(successResponse(await etsyTokenStatus(tokens), "Etsy auth status loaded"));
+    res.json(successResponse(await safeEtsyStatus(tokens), "Etsy auth status loaded"));
   } catch (error) {
     res.status(500).json(errorResponse("etsy_status_failed", error instanceof Error ? error.message : String(error)));
   }
@@ -3153,13 +3170,19 @@ async function handleActivateEtsyToken(req, res) {
     shop_id: user.etsy_auth?.shop_id || "",
     shop_name: user.etsy_auth?.shop_name || ""
   });
+  const etsy = await safeEtsyStatus(user.etsy_auth);
   res.json(successResponse({
     status: "activated",
     connected: true,
-    shop_id: user.etsy_auth?.shop_id || "",
-    shop_name: user.etsy_auth?.shop_name || "",
+    shop_id: etsy.shop_id || user.etsy_auth?.shop_id || "",
+    shop_name: etsy.shop_name || user.etsy_auth?.shop_name || "",
     auth_token: createAuthToken(user, user.etsy_auth),
-    etsy: await etsyTokenStatus(user.etsy_auth)
+    etsy: {
+      ...etsy,
+      connected: true,
+      shop_id: etsy.shop_id || user.etsy_auth?.shop_id || "",
+      shop_name: etsy.shop_name || user.etsy_auth?.shop_name || ""
+    }
   }, "Etsy session activated"));
 }
 
