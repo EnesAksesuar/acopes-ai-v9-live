@@ -2288,7 +2288,9 @@ const verifyEndpoint = `${ETSY_API_BASE}${verifyPath}`;
   } catch {
     payload = responseText;
   }
-  if (!response.ok && response.status === 404) {
+  console.log("[PRIMARY PUT STATUS]", response.status);
+
+if (response.status === 404) {
    const fallbackEndpoint = `${ETSY_API_FALLBACK_BASE}${putPath}`;
     console.log("[ETSY PUT BASE USED]", ETSY_API_FALLBACK_BASE);
     console.log("[ETSY PUT URL]", fallbackEndpoint);
