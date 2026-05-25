@@ -890,7 +890,7 @@ async function syncEtsyListings() {
     pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
-    renderEtsyAuthStatus(getSafeEtsyState(etsyState));
+    renderEtsyAuthStatus(getSafeEtsyState({}));
     setStatus("Completed");
     showToast(`Etsy sync completed. ${products.length} listings loaded.`, "success");
   } catch (error) {
@@ -2435,7 +2435,7 @@ async function refreshListings() {
     seenOptimizationIds.clear();
     pendingOptimizationByListing.clear();
     listingOptimizationDebug.clear();
-    renderEtsyAuthStatus(getSafeEtsyState(etsyState));
+    renderEtsyAuthStatus(getSafeEtsyState({}));
     products.sort((a, b) => {
       if (a.details_status === "synced" && b.details_status !== "synced") return -1;
       if (a.details_status !== "synced" && b.details_status === "synced") return 1;
@@ -3239,6 +3239,7 @@ async function bootAuthFlow() {
 
 loadAppConfig();
 bootAuthFlow();
+
 
 
 
