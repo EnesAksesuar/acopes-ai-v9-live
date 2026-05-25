@@ -3,9 +3,11 @@ import express from "express";
 import cookieSession from "cookie-session";
 import jwt from "jsonwebtoken";
 import fs from "node:fs/promises";
+import { DatabaseSync } from "node:sqlite";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { startQueueWorker } from "./workers/acopes-queue-worker.js";
 
 process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED:", err?.stack || err);
@@ -60,6 +62,11 @@ const ETSY_ACCESS_TOKEN_ENV = (process.env.ETSY_ACCESS_TOKEN || "").trim();
 const ETSY_REFRESH_TOKEN_ENV = (process.env.ETSY_REFRESH_TOKEN || "").trim();
 const ETSY_TOKEN_EXPIRES_AT_ENV = (process.env.ETSY_TOKEN_EXPIRES_AT || "").trim();
 const ETSY_SHOP_ID_ENV = (process.env.ETSY_SHOP_ID || "").trim();
+const USE_QUEUE_SEND_SELECTED = String(process.env.USE_QUEUE_SEND_SELECTED || "false").toLowerCase() === "true";
+const queueSqlitePath = path.join(runtimeDataDir, "acopes-queue.sqlite");
+let sendQueueDb = null;
+const queuedSendContexts = new Map();
+console.log(`[CONFIG] useQueueSend = ${USE_QUEUE_SEND_SELECTED}`);
 console.log("ETSY_CLIENT_ID first 6 chars:", process.env.ETSY_CLIENT_ID?.slice(0, 6) || "");
 console.log("ETSY_CLIENT_SECRET exists:", Boolean(process.env.ETSY_CLIENT_SECRET));
 const FREE_OPTIMIZATION_LIMIT = 15;
@@ -118,6 +125,9 @@ app.get("/api/routes-debug", (_req, res) => {
     testMakeResponseMounted: true,
     staticMounted: true
   });
+});
+app.get("/api/config", (_req, res) => {
+  res.json({ useQueueSend: USE_QUEUE_SEND_SELECTED });
 });
 console.log("ROUTE REGISTERED POST /api/test-make-response");
 console.log("Server route order initialized");
@@ -353,7 +363,179 @@ function requireUser(req, res, next) {
   res.status(401).json({ success: false, error: "login_required", message: "Login required." });
 }
 
+async function initSendQueueDb() {
+  await fs.mkdir(runtimeDataDir, { recursive: true });
+  let QueueDatabase = DatabaseSync;
+  try {
+    const betterSqlite = await import("better-sqlite3");
+    QueueDatabase = betterSqlite.default;
+  } catch {
+    // better-sqlite3 is preferred when installed; Node's built-in SQLite keeps this app runnable.
+  }
+  sendQueueDb = new QueueDatabase(queueSqlitePath);
+  sendQueueDb.exec(`
+    CREATE TABLE IF NOT EXISTS send_jobs (
+      id TEXT PRIMARY KEY,
+      status TEXT NOT NULL DEFAULT 'queued',
+      total_items INTEGER NOT NULL DEFAULT 0,
+      processed_items INTEGER NOT NULL DEFAULT 0,
+      failed_items INTEGER NOT NULL DEFAULT 0,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+
+    CREATE TABLE IF NOT EXISTS send_job_items (
+      id TEXT PRIMARY KEY,
+      job_id TEXT NOT NULL REFERENCES send_jobs(id),
+      listing_id TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'pending',
+      error TEXT,
+      created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+      updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+    );
+  `);
+  console.log("[DB INIT] send_jobs and send_job_items tables ready");
+}
+
+function queueDb() {
+  if (!sendQueueDb) throw new Error("Send queue database is not initialized.");
+  return sendQueueDb;
+}
+
+function sendQueueListingId(product = {}) {
+  return normalizeListingId(product.listing_id || product.id) || "unknown";
+}
+
+function cloneSendRequest(req, body) {
+  return {
+    body,
+    path: "/api/send-selected",
+    headers: { ...req.headers },
+    session: JSON.parse(JSON.stringify(req.session || {})),
+    user: req.user ? { ...req.user } : null,
+    etsyAuth: req.etsyAuth ? { ...req.etsyAuth } : null
+  };
+}
+
+function createQueueResponseShim() {
+  return {
+    headersSent: false,
+    statusCode: 200,
+    headers: {},
+    payload: null,
+    setHeader(name, value) {
+      this.headers[name] = value;
+    },
+    getHeader(name) {
+      return this.headers[name];
+    },
+    status(code) {
+      this.statusCode = code;
+      return this;
+    },
+    json(payload) {
+      this.payload = payload;
+      this.headersSent = true;
+      return this;
+    }
+  };
+}
+
+function queuedSendSucceeded(payload = {}) {
+  const unwrapped = payload.data && typeof payload.data === "object" ? payload.data : payload;
+  return Boolean(payload.ok || payload.success) && Number(unwrapped.sent || payload.sent || 0) > 0;
+}
+
+function queuedSendError(payload = {}, statusCode = 500) {
+  const unwrapped = payload.data && typeof payload.data === "object" ? payload.data : payload;
+  return payload.message || payload.error || unwrapped.message || unwrapped.error || `Send failed with status ${statusCode}`;
+}
+
+async function processQueuedSendItem(jobId, item) {
+  const context = queuedSendContexts.get(jobId);
+  if (!context) {
+    throw new Error("Queued send context is unavailable. Requeue the selected listings.");
+  }
+  const product = context.productsByListingId.get(String(item.listing_id));
+  if (!product) {
+    throw new Error("Queued listing payload is unavailable.");
+  }
+  const req = {
+    ...context.req,
+    body: {
+      ...context.body,
+      products: [product]
+    }
+  };
+  const res = createQueueResponseShim();
+  await handleSendBatch(req, res);
+  if (!queuedSendSucceeded(res.payload)) {
+    throw new Error(queuedSendError(res.payload, res.statusCode));
+  }
+  return res.payload;
+}
+
 app.post("/api/send-batch", requireUser, handleSendBatch);
+app.post("/api/send-selected", requireUser, handleSendBatch);
+
+app.post("/api/send-selected-queue", requireUser, async (req, res) => {
+  let validProducts = [];
+  const jobId = crypto.randomUUID();
+  try {
+    const products = Array.isArray(req.body.products) ? req.body.products : [];
+    validProducts = products.filter((product) => sendQueueListingId(product) !== "unknown");
+    const db = queueDb();
+    const insertJob = db.prepare("INSERT INTO send_jobs (id, status, total_items, processed_items, failed_items) VALUES (?, 'queued', ?, 0, 0)");
+    const insertItem = db.prepare("INSERT INTO send_job_items (id, job_id, listing_id, status) VALUES (?, ?, ?, 'pending')");
+    db.exec("BEGIN");
+    insertJob.run(jobId, validProducts.length);
+    for (const product of validProducts) {
+      insertItem.run(crypto.randomUUID(), jobId, sendQueueListingId(product));
+    }
+    db.exec("COMMIT");
+  } catch (error) {
+    try {
+      queueDb().exec("ROLLBACK");
+    } catch {
+      // No active transaction.
+    }
+    console.error("[QUEUE SEND ERROR]", error instanceof Error ? error.message : String(error));
+    res.status(500).json({ ok: false, error: "Could not queue selected listings" });
+    return;
+  }
+  queuedSendContexts.set(jobId, {
+    body: { ...req.body, products: validProducts },
+    req: cloneSendRequest(req, req.body),
+    productsByListingId: new Map(validProducts.map((product) => [sendQueueListingId(product), product]))
+  });
+  console.log(`[QUEUE SEND] job ${jobId} created with ${validProducts.length} items`);
+  res.json({ ok: true, job_id: jobId, status: "queued", count: validProducts.length });
+});
+
+app.get("/api/send-status", (req, res) => {
+  try {
+    const jobId = String(req.query.job_id || "");
+    const job = queueDb().prepare("SELECT id, status, total_items, processed_items, failed_items FROM send_jobs WHERE id = ?").get(jobId);
+    if (!job) {
+      res.status(404).json({ ok: false, error: "Job not found" });
+      return;
+    }
+    const total = Number(job.total_items || 0);
+    const processed = Number(job.processed_items || 0);
+    res.json({
+      ok: true,
+      job_id: job.id,
+      status: job.status,
+      total_items: total,
+      processed_items: processed,
+      failed_items: Number(job.failed_items || 0),
+      percent: total ? Math.min(100, Math.round((processed / total) * 100)) : 100
+    });
+  } catch (error) {
+    console.error("[QUEUE STATUS ERROR]", error instanceof Error ? error.message : String(error));
+    res.status(500).json({ ok: false, error: "Could not load job status" });
+  }
+});
 function sessionEmail(req) {
   return normalizeEmail(req.session?.email || req.user?.email || "");
 }
@@ -3835,7 +4017,7 @@ async function handleSendBatch(req, res) {
         results.push(normalizeSendResult({ listing_id: listingId || "unknown", status: "skipped", reason: "missing_listing_id" }));
         continue;
       }
-      if (directEtsyMode && (!liveIds.has(listingId) || (listingId === "4384247178" && !liveIds.has(listingId)))) {
+      if (directEtsyMode && (!liveIds.has(listingId))) {
         const shopId = normalizeListingId(req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || tokens?.shop_id || "");
         const directVerify = shopId && tokens?.access_token ? await directVerifyEtsyListing(tokens, shopId, listingId) : { found: false, status: 401 };
         if (directVerify.found) {
@@ -4208,6 +4390,13 @@ app.post("/api/optimizations/:id/approve", requireUser, async (req, res) => {
   res.json(successResponse(record, "Draft approved"));
 });
 
+await initSendQueueDb();
+startQueueWorker({
+  db: queueDb(),
+  processItem: processQueuedSendItem,
+  onJobComplete: (jobId) => queuedSendContexts.delete(jobId)
+});
+
 if (!IS_VERCEL) {
   app.listen(PORT, () => {
     console.log(`ACOPES AI optimization platform running at http://localhost:${PORT}`);
@@ -4219,6 +4408,7 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
 
 
 

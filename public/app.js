@@ -41,6 +41,8 @@ const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 const nativeFetch = window.fetch.bind(window);
+let appConfig = { useQueueSend: false };
+let appConfigPromise = null;
 
 function storedAuthToken() {
   try {
@@ -80,6 +82,19 @@ window.fetch = async (input, init = {}) => {
   if (freshToken) persistAuthToken(freshToken);
   return response;
 };
+
+async function loadAppConfig() {
+  if (!appConfigPromise) {
+    appConfigPromise = fetch("/api/config")
+      .then((response) => response.ok ? response.json() : appConfig)
+      .then((config) => {
+        appConfig = { useQueueSend: Boolean(config.useQueueSend) };
+        return appConfig;
+      })
+      .catch(() => appConfig);
+  }
+  return appConfigPromise;
+}
 
 const productsEl = document.querySelector("#products");
 const logsEl = document.querySelector("#logs");
@@ -875,7 +890,7 @@ async function syncEtsyListings() {
     pruneSelectedListings();
     renderProducts();
     renderCommerceIntelligence();
-    renderEtsyAuthStatus(getSafeEtsyState({}));
+    renderEtsyAuthStatus(getSafeEtsyState(etsyState));
     setStatus("Completed");
     showToast(`Etsy sync completed. ${products.length} listings loaded.`, "success");
   } catch (error) {
@@ -2420,7 +2435,7 @@ async function refreshListings() {
     seenOptimizationIds.clear();
     pendingOptimizationByListing.clear();
     listingOptimizationDebug.clear();
-    renderEtsyAuthStatus(getSafeEtsyState({}));
+    renderEtsyAuthStatus(getSafeEtsyState(etsyState));
     products.sort((a, b) => {
       if (a.details_status === "synced" && b.details_status !== "synced") return -1;
       if (a.details_status !== "synced" && b.details_status === "synced") return 1;
@@ -2599,7 +2614,9 @@ async function sendBatch(productsToSend) {
       setStatus("Failed");
       return;
     }
-    const response = await fetch("/api/send-batch", {
+    const config = await loadAppConfig();
+    const sendEndpoint = config.useQueueSend ? "/api/send-selected-queue" : "/api/send-selected";
+    const response = await fetch(sendEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ products: productsWithOptimizations })
@@ -2616,6 +2633,18 @@ async function sendBatch(productsToSend) {
       if (result.session) renderSession(result.session);
       const message = result.error === "make_webhook_not_configured" ? "Make webhook missing. Add MAKE_WEBHOOK_URL to the environment." : result.message || "Batch optimization failed.";
       showToast(message, "error");
+      return;
+    }
+    if (config.useQueueSend && result.job_id) {
+      showToast(`${result.count || productsWithOptimizations.length} listings queued for Etsy send.`, "success");
+      const queueStatus = await pollSendStatus(result.job_id);
+      if (queueStatus.status === "failed") {
+        showToast(`Queued send completed with ${queueStatus.failed_items} failed.`, "error");
+      } else {
+        showToast(`Queued send completed. ${queueStatus.processed_items - queueStatus.failed_items} sent, ${queueStatus.failed_items} failed.`, queueStatus.failed_items ? "error" : "success");
+      }
+      await refreshLogs();
+      await refreshOptimizations();
       return;
     }
     if (result.session || result.data?.session) renderSession(result.session || result.data.session);
@@ -2704,6 +2733,18 @@ function sendResultMessage(item = {}) {
   const label = sendReasonLabel(item.reason, status);
   const id = item.listing_id && item.listing_id !== "unknown" ? `Listing ${item.listing_id}` : "Selected listing";
   return `${id} ${status} — ${label}`;
+}
+
+async function pollSendStatus(jobId) {
+  for (let attempt = 0; attempt < 120; attempt += 1) {
+    const response = await fetch(`/api/send-status?job_id=${encodeURIComponent(jobId)}`);
+    const status = await parseJsonResponse(response);
+    if (!response.ok || !status.ok) throw new Error(status.error || "Send status unavailable");
+    setStatus(status.status === "failed" ? "Failed" : status.status === "completed" ? "Queued" : "Sending");
+    if (status.status === "completed" || status.status === "failed") return status;
+    await new Promise((resolve) => setTimeout(resolve, 5000));
+  }
+  throw new Error("Send status timed out");
 }
 
 async function optimizeSingleListingById(listingId = "", options = {}) {
@@ -3196,6 +3237,8 @@ async function bootAuthFlow() {
   }
 }
 
+loadAppConfig();
 bootAuthFlow();
+
 
 
