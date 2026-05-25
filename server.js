@@ -2767,7 +2767,7 @@ async function safeEtsyStatus(tokens = {}) {
 }
 
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
-  const endpoint = `${ETSY_API_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`;
+  const endpoint = `${ETSY_API_BASE}/listings/${encodeURIComponent(listingId)}`;
   console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
   const response = await fetch(endpoint, {
     method: "GET",
@@ -4408,6 +4408,7 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
 
 
 
