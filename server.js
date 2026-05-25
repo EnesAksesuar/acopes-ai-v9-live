@@ -2852,7 +2852,7 @@ async function updateEtsyListingDirect(req, res, product = {}) {
 
   const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
   const etsyUpdateBase = ETSY_API_BASE;
-  const verifyEndpoint = `${etsyUpdateBase}${listingPath}`;
+  const verifyEndpoint = `${etsyUpdateBase}/listings/${encodeURIComponent(liveListingId)}`;
   console.log("[DIRECT LISTING VERIFY]", {
     endpoint: verifyEndpoint,
     shop_id: shopId,
@@ -4408,6 +4408,7 @@ if (typeof module !== "undefined") {
 }
 
 export default app;
+
 
 
 
