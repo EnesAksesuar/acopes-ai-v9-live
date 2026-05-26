@@ -1068,6 +1068,23 @@ function listingIdFor(item = {}) {
   return String(item?.listing_id || item?.id || "").trim();
 }
 
+function isActiveEtsyListing(item = {}) {
+  const state = item?.state;
+  if (state === undefined || state === null || state === "") return true;
+  if (typeof state === "number") return state > 0;
+  const normalized = String(state).trim().toLowerCase();
+  return normalized === "active" || normalized === "1" || normalized === "true";
+}
+
+function liveListingExclusionReason(item = {}, id = listingIdFor(item)) {
+  if (!id) return "normalization_failure";
+  if (!/^\d+$/.test(id)) return "normalization_failure";
+  if (BLOCKED_STALE_LISTING_IDS.has(id)) return "blocked_stale_id";
+  if (String(item.sync_source || "").toLowerCase() !== "etsy_api") return "not_in_payload";
+  if (!isActiveEtsyListing(item)) return "filtered_non_active";
+  return "";
+}
+
 function productSelectionId(product = {}, index = 0) {
   return listingIdFor(product);
 }
@@ -1088,7 +1105,7 @@ function liveListingIds() {
   const ids = new Set(
     products
       .map((product) => ({ product, id: listingIdFor(product) }))
-      .filter(({ product, id }) => String(product.sync_source || "").toLowerCase() === "etsy_api" && /^\d+$/.test(id) && !BLOCKED_STALE_LISTING_IDS.has(id))
+      .filter(({ product, id }) => !liveListingExclusionReason(product, id))
       .map(({ id }) => id)
   );
   console.log("[LIVE LISTING IDS BUILT]", {
@@ -2444,6 +2461,13 @@ async function refreshListings() {
     etsyConnectionRequired = false;
     etsySellerAccountRequired = false;
     products = Array.isArray(payload.listings) ? payload.listings : [];
+    const rawListingIds = products.map(listingIdFor).filter(Boolean);
+    console.log("[LIVE LISTINGS RAW]", {
+      count: products.length,
+      first_5_listing_ids: rawListingIds.slice(0, 5),
+      contains_4378230966: rawListingIds.includes("4378230966"),
+      listing_4378230966: products.find((item) => listingIdFor(item) === "4378230966") || null
+    });
     const liveIdsAfterLoad = liveListingIds();
     console.log("[LIVE LISTING IDS REBUILT]", [...liveIdsAfterLoad]);
     selectedListingIds.clear();
@@ -2596,7 +2620,13 @@ async function sendBatch(productsToSend) {
       const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
       console.log("[SEND BATCH ID MATCH CHECK]", { listing_id: id || "missing", matched: keep });
       if (!keep) {
-        console.log("[SEND PRECHECK MISSING LIVE ID]", { listing_id: id || "missing" });
+        const payloadListing = products.find((product) => listingIdFor(product) === id);
+        const rendered = [...document.querySelectorAll(".product-card[data-listing-id]")]
+          .some((card) => String(card.dataset.listingId || "") === id);
+        const reason = !payloadListing
+          ? "not_in_payload"
+          : liveListingExclusionReason(payloadListing, id) || (!rendered ? "not_rendered" : "normalization_failure");
+        console.log("[SEND PRECHECK MISSING LIVE ID]", { listing_id: id || "missing", reason });
         console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
       }
       return keep;
