@@ -2760,7 +2760,7 @@ async function optimizeSingleListingById(listingId = "", options = {}) {
   }
   selectedListingIds.clear();
   selectedListingIds.add(productSelectionId(product, products.indexOf(product)));
-  selectStudioProduct(product, "", { scroll: options.scroll !== false });
+  selectStudioProduct(product, "", { scroll: false });
   renderProducts();
   await sendSingle(product);
   if (options.inlineQuickResult) {
