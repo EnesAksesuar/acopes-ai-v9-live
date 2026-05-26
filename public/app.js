@@ -2719,6 +2719,8 @@ function sendReasonLabel(reason = "", status = "failed") {
     not_optimized: "not optimized",
     no_optimized_changes: "no optimized changes",
     not_live_listing: "product not found in live listings",
+    etsy_permission_or_approval_issue: "Etsy permission/API approval issue",
+    etsy_api_unavailable: "Etsy API unavailable",
     etsy_api_failed: "Etsy API failed",
     missing_listing_id: "missing listing ID",
     invalid_listing_id: "missing listing ID"
