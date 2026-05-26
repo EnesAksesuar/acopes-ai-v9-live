@@ -519,7 +519,15 @@ async function processQueuedSendItem(jobId, item) {
 }
 
 app.post("/api/send-batch", requireUser, handleSendBatch);
-app.post("/api/send-selected", requireUser, handleSendBatch);
+app.post("/api/send-selected", (req, res) => {
+  console.log("[SEND SELECTED ROUTE HIT]", {
+    route: req.path,
+    shop_id: req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || "",
+    selected_count: Array.isArray(req.body?.products) ? req.body.products.length : 0,
+    body_keys: Object.keys(req.body || {})
+  });
+  requireUser(req, res, () => handleSendBatch(req, res));
+});
 
 app.post("/api/send-selected-queue", requireUser, async (req, res) => {
   let validProducts = [];
@@ -2834,6 +2842,7 @@ async function safeEtsyStatus(tokens = {}) {
 
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
   const endpoint = `${ETSY_API_BASE}/listings/${encodeURIComponent(listingId)}`;
+  console.log("[DIRECT VERIFY ETSY LISTING]", { endpoint, shop_id: shopId, listing_id: listingId });
   console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
   let response;
   try {
@@ -2950,13 +2959,9 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   });
   if (verifyResponse.status === 404) {
     console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: shopId, listing_id: liveListingId, reason: "direct_verify_404" });
-    const cachedIds = liveEtsyApiListingIds(await readListingsCache(shopId));
     const syncedListings = await syncEtsyListings(tokens, res, req);
-    const syncedIds = new Set([
-      ...liveEtsyApiListingIds(syncedListings),
-      ...cachedIds
-    ]);
-    console.log("[LIVE IDS AFTER FORCE SYNC]", { count: syncedIds.size, cached_count: cachedIds.size, first_10_listing_ids: [...syncedIds].slice(0, 10) });
+    const syncedIds = liveEtsyApiListingIds(syncedListings);
+    console.log("[LIVE IDS AFTER FORCE SYNC]", { count: syncedIds.size, first_10_listing_ids: [...syncedIds].slice(0, 10) });
     if (syncedIds.has(liveListingId)) {
       console.log("[DIRECT LISTING VERIFY]", { listing_id: liveListingId, matched_after_force_sync: true });
       verifyResponse = await fetch(verifyEndpoint, {
@@ -4083,14 +4088,10 @@ async function handleSendBatch(req, res) {
     if (directEtsyMode) {
       console.log("[SEND SOURCE OF TRUTH]", "etsy_api");
       tokens = await discoverEtsyShop(await ensureValidEtsyToken(await resolveRequestEtsyAuth(req), res, req), { req, res });
-      const cachedLiveIds = liveEtsyApiListingIds(await readListingsCache(tokens.shop_id));
       console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: tokens.shop_id || "", selected_count: requestedIds.length });
       const liveListings = await syncEtsyListings(tokens, res, req);
-      liveIds = new Set([
-        ...liveEtsyApiListingIds(liveListings),
-        ...cachedLiveIds
-      ]);
-      console.log("[LIVE IDS AFTER FORCE SYNC]", { count: liveIds.size, cached_count: cachedLiveIds.size, first_10_listing_ids: [...liveIds].slice(0, 10) });
+      liveIds = liveEtsyApiListingIds(liveListings);
+      console.log("[LIVE IDS AFTER FORCE SYNC]", { count: liveIds.size, first_10_listing_ids: [...liveIds].slice(0, 10) });
       console.log("[SEND SELECTED LIVE IDS]", { liveCount: liveIds.size });
     }
     const storedOptimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
@@ -4121,6 +4122,14 @@ async function handleSendBatch(req, res) {
             console.warn("[SEND BATCH ID MATCH CHECK]", { listing_id: listingId, matched: false, reason: "not_live_listing", etsy_status: directVerify.status });
             console.warn("[SEND DECISION]", { listing_id: listingId, decision: "skipped_not_live" });
             console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
+            console.warn("[SEND SELECTED SKIP REASON]", {
+              listing_id: listingId,
+              reason: "not_live_listing",
+              liveListingIds_count: liveIds.size,
+              liveListingIds_sample: [...liveIds].slice(0, 10),
+              selectedIds: requestedIds,
+              body_keys: Object.keys(req.body || {})
+            });
             results.push(normalizeSendResult({
               listing_id: listingId,
               status: "skipped",
@@ -4216,6 +4225,14 @@ async function handleSendBatch(req, res) {
         if (error?.code === "etsy_resource_not_found" || error?.code === "stale_listing_id") {
           skipped += 1;
           console.warn("[SEND SELECTED SKIPPED]", { listing_id: listingId, reason: "not_live_listing" });
+          console.warn("[SEND SELECTED SKIP REASON]", {
+            listing_id: listingId,
+            reason: "not_live_listing",
+            liveListingIds_count: liveIds.size,
+            liveListingIds_sample: [...liveIds].slice(0, 10),
+            selectedIds: requestedIds,
+            body_keys: Object.keys(req.body || {})
+          });
           results.push(normalizeSendResult({
             listing_id: listingId,
             status: "skipped",
