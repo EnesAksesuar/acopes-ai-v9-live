@@ -29,7 +29,7 @@ const runtimeDataDir = path.join(process.env.ACOPES_DATA_DIR || "/tmp", "acopes-
 const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
 const MAKE_RESPONSE_SECRET = (process.env.MAKE_RESPONSE_SECRET || "").trim();
-const SESSION_SECRET = process.env.SESSION_SECRET || "acopes2026secret";
+const SESSION_SECRET = requireEnv("SESSION_SECRET");
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const logsPath = path.join(runtimeDataDir, "automation-logs.json");
 const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
@@ -92,6 +92,14 @@ async function loadDotEnv(filePath) {
   } catch {
     // Local .env is optional. Production should provide environment variables.
   }
+}
+
+function requireEnv(name) {
+  const value = String(process.env[name] || "").trim();
+  if (!value) {
+    throw new Error(`${name} is required`);
+  }
+  return value;
 }
 
 app.use("/api/make-response", express.text({ type: "*/*", limit: "2mb" }));
@@ -215,7 +223,7 @@ function normalizeEtsyAuth(auth = {}) {
 }
 
 function etsyAuthCookieKey() {
-  return nodeCrypto.createHash("sha256").update(String(SESSION_SECRET || "acopes2026secret")).digest();
+  return nodeCrypto.createHash("sha256").update(String(SESSION_SECRET)).digest();
 }
 
 function encodeEncryptedCookiePayload(payload = {}) {
@@ -380,6 +388,9 @@ async function initSendQueueDb() {
       total_items INTEGER NOT NULL DEFAULT 0,
       processed_items INTEGER NOT NULL DEFAULT 0,
       failed_items INTEGER NOT NULL DEFAULT 0,
+      user_email TEXT NOT NULL DEFAULT '',
+      user_id TEXT NOT NULL DEFAULT '',
+      request_json TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
@@ -388,13 +399,28 @@ async function initSendQueueDb() {
       id TEXT PRIMARY KEY,
       job_id TEXT NOT NULL REFERENCES send_jobs(id),
       listing_id TEXT NOT NULL,
+      payload_json TEXT,
       status TEXT NOT NULL DEFAULT 'pending',
       error TEXT,
       created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
   `);
+  ensureSendQueueColumn("send_jobs", "user_email", "TEXT NOT NULL DEFAULT ''");
+  ensureSendQueueColumn("send_jobs", "user_id", "TEXT NOT NULL DEFAULT ''");
+  ensureSendQueueColumn("send_jobs", "request_json", "TEXT");
+  ensureSendQueueColumn("send_job_items", "payload_json", "TEXT");
   console.log("[DB INIT] send_jobs and send_job_items tables ready");
+}
+
+function ensureSendQueueColumn(table, column, definition) {
+  try {
+    sendQueueDb.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
+  } catch (error) {
+    if (!String(error?.message || error).toLowerCase().includes("duplicate column")) {
+      throw error;
+    }
+  }
 }
 
 function queueDb() {
@@ -415,6 +441,19 @@ function cloneSendRequest(req, body) {
     user: req.user ? { ...req.user } : null,
     etsyAuth: req.etsyAuth ? { ...req.etsyAuth } : null
   };
+}
+
+function safeJsonParse(value, fallback = null) {
+  if (!value) return fallback;
+  try {
+    return JSON.parse(value);
+  } catch {
+    return fallback;
+  }
+}
+
+function sendQueueUserId(req) {
+  return String(req.session?.user_id || req.user?.id || req.user?.user_id || "");
 }
 
 function createQueueResponseShim() {
@@ -452,11 +491,15 @@ function queuedSendError(payload = {}, statusCode = 500) {
 }
 
 async function processQueuedSendItem(jobId, item) {
-  const context = queuedSendContexts.get(jobId);
+  let context = queuedSendContexts.get(jobId);
+  if (!context) {
+    const job = queueDb().prepare("SELECT request_json FROM send_jobs WHERE id = ?").get(jobId);
+    context = safeJsonParse(job?.request_json);
+  }
   if (!context) {
     throw new Error("Queued send context is unavailable. Requeue the selected listings.");
   }
-  const product = context.productsByListingId.get(String(item.listing_id));
+  const product = context.productsByListingId?.get(String(item.listing_id)) || safeJsonParse(item.payload_json);
   if (!product) {
     throw new Error("Queued listing payload is unavailable.");
   }
@@ -481,16 +524,23 @@ app.post("/api/send-selected", requireUser, handleSendBatch);
 app.post("/api/send-selected-queue", requireUser, async (req, res) => {
   let validProducts = [];
   const jobId = crypto.randomUUID();
+  const userEmail = sessionEmail(req);
+  const userId = sendQueueUserId(req);
+  const baseBody = { ...req.body, products: [] };
+  const requestSnapshot = {
+    body: baseBody,
+    req: cloneSendRequest(req, baseBody)
+  };
   try {
     const products = Array.isArray(req.body.products) ? req.body.products : [];
     validProducts = products.filter((product) => sendQueueListingId(product) !== "unknown");
     const db = queueDb();
-    const insertJob = db.prepare("INSERT INTO send_jobs (id, status, total_items, processed_items, failed_items) VALUES (?, 'queued', ?, 0, 0)");
-    const insertItem = db.prepare("INSERT INTO send_job_items (id, job_id, listing_id, status) VALUES (?, ?, ?, 'pending')");
+    const insertJob = db.prepare("INSERT INTO send_jobs (id, status, total_items, processed_items, failed_items, user_email, user_id, request_json) VALUES (?, 'queued', ?, 0, 0, ?, ?, ?)");
+    const insertItem = db.prepare("INSERT INTO send_job_items (id, job_id, listing_id, payload_json, status) VALUES (?, ?, ?, ?, 'pending')");
     db.exec("BEGIN");
-    insertJob.run(jobId, validProducts.length);
+    insertJob.run(jobId, validProducts.length, userEmail, userId, JSON.stringify(requestSnapshot));
     for (const product of validProducts) {
-      insertItem.run(crypto.randomUUID(), jobId, sendQueueListingId(product));
+      insertItem.run(crypto.randomUUID(), jobId, sendQueueListingId(product), JSON.stringify(product));
     }
     db.exec("COMMIT");
   } catch (error) {
@@ -504,18 +554,18 @@ app.post("/api/send-selected-queue", requireUser, async (req, res) => {
     return;
   }
   queuedSendContexts.set(jobId, {
-    body: { ...req.body, products: validProducts },
-    req: cloneSendRequest(req, req.body),
+    body: baseBody,
+    req: requestSnapshot.req,
     productsByListingId: new Map(validProducts.map((product) => [sendQueueListingId(product), product]))
   });
   console.log(`[QUEUE SEND] job ${jobId} created with ${validProducts.length} items`);
   res.json({ ok: true, job_id: jobId, status: "queued", count: validProducts.length });
 });
 
-app.get("/api/send-status", (req, res) => {
+app.get("/api/send-status", requireUser, (req, res) => {
   try {
     const jobId = String(req.query.job_id || "");
-    const job = queueDb().prepare("SELECT id, status, total_items, processed_items, failed_items FROM send_jobs WHERE id = ?").get(jobId);
+    const job = queueDb().prepare("SELECT id, status, total_items, processed_items, failed_items FROM send_jobs WHERE id = ? AND user_email = ?").get(jobId, sessionEmail(req));
     if (!job) {
       res.status(404).json({ ok: false, error: "Job not found" });
       return;
@@ -3763,14 +3813,15 @@ app.post("/api/clear-stale-queue", requireUser, async (req, res) => {
   const liveListings = (await readListingsCache(userTokens.shop_id)).filter((listing) => String(listing.sync_source || "") === "etsy_api");
   const liveIds = new Set(liveListings.map((listing) => normalizeListingId(listing.listing_id || listing.id)).filter(Boolean));
   const blockedIds = new Set(["4384247178"]);
-  const isLive = (item) => {
+  const isCurrentUserRecord = (item) => belongsToSessionEmail(item, req);
+  const isLiveForCurrentUser = (item) => {
     const listingId = normalizeListingId(item.listing_id || item.id);
-    return listingId && liveIds.has(listingId) && !blockedIds.has(listingId) && belongsToSessionEmail(item, req);
+    return listingId && liveIds.has(listingId) && !blockedIds.has(listingId);
   };
   const queue = await readRuntimeJson(queuePath, queueSeedPath, []);
   const optimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
-  const nextQueue = queue.filter(isLive);
-  const nextOptimizations = optimizations.filter(isLive);
+  const nextQueue = queue.filter((item) => !isCurrentUserRecord(item) || isLiveForCurrentUser(item));
+  const nextOptimizations = optimizations.filter((item) => !isCurrentUserRecord(item) || isLiveForCurrentUser(item));
   await writeJsonFile(queuePath, nextQueue);
   await writeJsonFile(optimizationsPath, nextOptimizations);
   console.log("[BACKEND STALE QUEUE CLEARED]", {

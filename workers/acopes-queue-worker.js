@@ -35,7 +35,7 @@ function finishJobIfComplete(db, jobId, onJobComplete) {
 }
 
 async function processJob(db, job, processItem, onJobComplete) {
-  const items = db.prepare("SELECT id, job_id, listing_id FROM send_job_items WHERE job_id = ? AND status = 'pending' ORDER BY created_at ASC").all(job.id);
+  const items = db.prepare("SELECT id, job_id, listing_id, payload_json FROM send_job_items WHERE job_id = ? AND status = 'pending' ORDER BY created_at ASC").all(job.id);
   console.log(`[QUEUE WORKER] processing job ${job.id} — ${items.length} items`);
   db.prepare("UPDATE send_jobs SET status = 'processing', updated_at = CURRENT_TIMESTAMP WHERE id = ?").run(job.id);
   for (const item of items) {
