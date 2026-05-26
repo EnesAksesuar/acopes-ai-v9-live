@@ -2516,6 +2516,34 @@ async function refreshListings() {
   }
 }
 
+async function refreshLiveListingsForSendPrecheck(selectedIds = []) {
+  console.log("[SEND PRECHECK REFRESH LIVE LISTINGS]", { selected_ids: selectedIds });
+  const response = await fetch("/api/listings");
+  const result = await parseJsonResponse(response);
+  if (!response.ok || result?.success === false) {
+    console.log("[SEND PRECHECK REFRESH LIVE LISTINGS]", {
+      ok: false,
+      status: response.status,
+      error: result?.error || result?.message || ""
+    });
+    return liveListingIds();
+  }
+  const payload = unwrapResponse(result, result);
+  products = Array.isArray(payload.listings) ? payload.listings : [];
+  products.sort((a, b) => {
+    if (a.details_status === "synced" && b.details_status !== "synced") return -1;
+    if (a.details_status !== "synced" && b.details_status === "synced") return 1;
+    return String(a.title || "").localeCompare(String(b.title || ""));
+  });
+  const refreshedIds = liveListingIds();
+  console.log("[SEND PRECHECK LIVE IDS AFTER REFRESH]", {
+    count: refreshedIds.size,
+    sample_ids: [...refreshedIds].slice(0, 10),
+    includes_4378230966: refreshedIds.has("4378230966")
+  });
+  return refreshedIds;
+}
+
 async function sendSingle(product) {
   if (!product) {
     showToast("Select at least one listing first.", "error");
@@ -2597,7 +2625,7 @@ async function sendBatch(productsToSend) {
   const previousText = sendBatchBtn.textContent;
   sendBatchBtn.textContent = "Sending...";
   try {
-    const liveIds = renderedLiveListingIds();
+    let liveIds = liveListingIds();
     const selectedIds = productsToSend.map(listingIdFor).filter(Boolean);
     console.log("[SEND BATCH SELECTED IDS]", selectedIds);
     console.log("[SEND BATCH LIVE IDS]", [...liveIds]);
@@ -2608,6 +2636,9 @@ async function sendBatch(productsToSend) {
     });
     console.log("[SEND PRECHECK SELECTED IDS]", selectedIds);
     console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
+    if (!liveIds.size || selectedIds.some((id) => !liveIds.has(id))) {
+      liveIds = await refreshLiveListingsForSendPrecheck(selectedIds);
+    }
     pruneStaleOptimizationState("before_send", liveIds);
     [...selectedListingIds].forEach((id) => {
       if (!liveIds.has(String(id))) {
