@@ -526,6 +526,12 @@ app.post("/api/send-selected-queue", requireUser, async (req, res) => {
   const jobId = crypto.randomUUID();
   const userEmail = sessionEmail(req);
   const userId = sendQueueUserId(req);
+  console.log("[SEND SELECTED ROUTE HIT]", {
+    route: req.path,
+    shop_id: req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || "",
+    selected_count: Array.isArray(req.body.products) ? req.body.products.length : 0,
+    body_keys: Object.keys(req.body || {})
+  });
   const baseBody = { ...req.body, products: [] };
   const requestSnapshot = {
     body: baseBody,
@@ -4034,6 +4040,12 @@ app.post("/api/send", requireUser, async (req, res) => {
 });
 
 async function handleSendBatch(req, res) {
+  console.log("[SEND SELECTED ROUTE HIT]", {
+    route: req.path,
+    shop_id: req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || "",
+    selected_count: Array.isArray(req.body.products) ? req.body.products.length : 0,
+    body_keys: Object.keys(req.body || {})
+  });
   console.log("[ACTIVE SEND ROUTE HIT]", { path: req.path, body: req.body });
   const products = Array.isArray(req.body.products) ? req.body.products : [];
   const user = await getSessionUser(req.session);

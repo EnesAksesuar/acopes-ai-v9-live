@@ -147,6 +147,10 @@ if (sendBatchBtn) {
   sendBatchBtn.title = "Send optimized selected listings to Etsy";
   sendBatchBtn.setAttribute("aria-label", "Send optimized selected listings to Etsy");
 }
+if (sendSelectedBtn) {
+  sendSelectedBtn.title = "Send optimized selected listings to Etsy";
+  sendSelectedBtn.setAttribute("aria-label", "Send optimized selected listings to Etsy");
+}
 const seenOptimizationIds = new Set();
 const rewriteModesByRecord = new Map();
 const rewriteModeDetails = {
@@ -2542,6 +2546,10 @@ async function sendSingle(product) {
 
 async function sendBatch(productsToSend) {
   if (!productsToSend.length) {
+    console.warn("[SEND SELECTED BLOCKED EMPTY_SELECTION]", {
+      selectedListingIds: [...selectedListingIds],
+      liveListingIds: [...renderedLiveListingIds()]
+    });
     showToast("Select at least one optimized listing first.", "error");
     setStatus("Failed");
     return;
@@ -2616,10 +2624,15 @@ async function sendBatch(productsToSend) {
     }
     const config = await loadAppConfig();
     const sendEndpoint = config.useQueueSend ? "/api/send-selected-queue" : "/api/send-selected";
+    const sendPayload = { products: productsWithOptimizations };
+    console.log("[SEND SELECTED FETCH START]", {
+      endpoint: sendEndpoint,
+      payload: sendPayload
+    });
     const response = await fetch(sendEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ products: productsWithOptimizations })
+      body: JSON.stringify(sendPayload)
     });
     setStatus(response.ok ? "Queued" : "Failed");
     const result = await parseJsonResponse(response);
@@ -2783,17 +2796,43 @@ async function initializeDashboard() {
 
 sendSelectedBtn?.addEventListener("click", async () => {
   rebuildSelectedListingIdsFromDom();
-  console.log("GENERATE CLICKED", selectedListingIds);
+  console.log("[SEND SELECTED CLICK]", {
+    selectedListingIds: [...selectedListingIds],
+    liveListingIds: [...renderedLiveListingIds()]
+  });
   if (sendSelectedBtn.disabled && selectedProducts().length) sendSelectedBtn.disabled = false;
-  const [product] = requireSelectedProducts();
-  if (!product) return;
-  await sendSingle(product);
+  const batch = requireSelectedProducts();
+  if (!batch.length) {
+    console.warn("[SEND SELECTED BLOCKED EMPTY_SELECTION]", {
+      selectedListingIds: [...selectedListingIds],
+      liveListingIds: [...renderedLiveListingIds()]
+    });
+    showToast("Select at least one optimized listing first.", "error");
+    setStatus("Failed");
+    return;
+  }
+  console.log("[SEND SELECTED BUTTON ROUTED TO BATCH]", {
+    selectedIds: batch.map((listing) => String(listing.listing_id || listing.id || ""))
+  });
+  await sendBatch(batch);
 });
 
 sendBatchBtn?.addEventListener("click", async () => {
   rebuildSelectedListingIdsFromDom();
+  console.log("[SEND SELECTED CLICK]", {
+    selectedListingIds: [...selectedListingIds],
+    liveListingIds: [...renderedLiveListingIds()]
+  });
   const batch = requireSelectedProducts();
-  if (!batch.length) return;
+  if (!batch.length) {
+    console.warn("[SEND SELECTED BLOCKED EMPTY_SELECTION]", {
+      selectedListingIds: [...selectedListingIds],
+      liveListingIds: [...renderedLiveListingIds()]
+    });
+    showToast("Select at least one optimized listing first.", "error");
+    setStatus("Failed");
+    return;
+  }
   await sendBatch(batch);
 });
 
