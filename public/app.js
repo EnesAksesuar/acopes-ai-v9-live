@@ -39,6 +39,8 @@ let lastToastKey = "";
 let lastToastAt = 0;
 const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
+const ACOPES_BUILD_STAMP = "ACOPES_BUILD_SEND_SELECTED_DEBUG_001";
+console.log(ACOPES_BUILD_STAMP);
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 const nativeFetch = window.fetch.bind(window);
 let appConfig = { useQueueSend: false };
@@ -656,6 +658,11 @@ function showToast(message, type = "success") {
     toast.classList.add("leaving");
     window.setTimeout(() => toast.remove(), 220);
   }, 3600);
+}
+
+function showSendDebug(message) {
+  showToast(message, "error");
+  console.log(`[SEND DEBUG UI] ${message}`);
 }
 
 function setAuthState(nextState, details = {}) {
@@ -2518,6 +2525,7 @@ async function refreshListings() {
 
 async function refreshLiveListingsForSendPrecheck(selectedIds = []) {
   console.log("[SEND PRECHECK REFRESH LIVE LISTINGS]", { selected_ids: selectedIds });
+  showSendDebug(`SEND_PRECHECK_REFRESH_LIVE_LISTINGS selected ${selectedIds.length}`);
   const response = await fetch("/api/listings");
   const result = await parseJsonResponse(response);
   if (!response.ok || result?.success === false) {
@@ -2526,6 +2534,7 @@ async function refreshLiveListingsForSendPrecheck(selectedIds = []) {
       status: response.status,
       error: result?.error || result?.message || ""
     });
+    showSendDebug(`SEND_PRECHECK_REFRESH_LIVE_LISTINGS failed ${response.status}`);
     return liveListingIds();
   }
   const payload = unwrapResponse(result, result);
@@ -2541,6 +2550,7 @@ async function refreshLiveListingsForSendPrecheck(selectedIds = []) {
     sample_ids: [...refreshedIds].slice(0, 10),
     includes_4378230966: refreshedIds.has("4378230966")
   });
+  showSendDebug(`SEND_PRECHECK_LIVE_IDS_AFTER_REFRESH count ${refreshedIds.size}, includes selected ${selectedIds.every((id) => refreshedIds.has(id))}`);
   return refreshedIds;
 }
 
@@ -2639,6 +2649,10 @@ async function sendBatch(productsToSend) {
     if (!liveIds.size || selectedIds.some((id) => !liveIds.has(id))) {
       liveIds = await refreshLiveListingsForSendPrecheck(selectedIds);
     }
+    const missingAfterRefresh = selectedIds.filter((id) => !liveIds.has(id));
+    if (missingAfterRefresh.length) {
+      showSendDebug(`SEND_SELECTED_ROUTE_NOT_REACHED missing ${missingAfterRefresh.join(",")}`);
+    }
     pruneStaleOptimizationState("before_send", liveIds);
     [...selectedListingIds].forEach((id) => {
       if (!liveIds.has(String(id))) {
@@ -2658,6 +2672,7 @@ async function sendBatch(productsToSend) {
           ? "not_in_payload"
           : liveListingExclusionReason(payloadListing, id) || (!rendered ? "not_rendered" : "normalization_failure");
         console.log("[SEND PRECHECK MISSING LIVE ID]", { listing_id: id || "missing", reason });
+        showSendDebug(`SEND_SELECTED_ROUTE_NOT_REACHED ${id || "missing"} ${reason}`);
         console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
       }
       return keep;
@@ -2713,6 +2728,7 @@ async function sendBatch(productsToSend) {
       endpoint: sendEndpoint,
       payload: sendPayload
     });
+    showSendDebug(`SEND_SELECTED_FETCH_START ${sendEndpoint} count ${productsWithOptimizations.length}`);
     const response = await fetch(sendEndpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -2898,8 +2914,10 @@ sendSelectedBtn?.addEventListener("click", async () => {
   rebuildSelectedListingIdsFromDom();
   console.log("[SEND SELECTED CLICK]", {
     selectedListingIds: [...selectedListingIds],
-    liveListingIds: [...renderedLiveListingIds()]
+    liveListingIds: [...renderedLiveListingIds()],
+    selected_count: selectedListingIds.size
   });
+  showSendDebug(`SEND_SELECTED_CLICK selected ${selectedListingIds.size}: ${[...selectedListingIds].join(",") || "none"}`);
   if (sendSelectedBtn.disabled && selectedProducts().length) sendSelectedBtn.disabled = false;
   const batch = requireSelectedProducts();
   if (!batch.length) {
@@ -2921,8 +2939,10 @@ sendBatchBtn?.addEventListener("click", async () => {
   rebuildSelectedListingIdsFromDom();
   console.log("[SEND SELECTED CLICK]", {
     selectedListingIds: [...selectedListingIds],
-    liveListingIds: [...renderedLiveListingIds()]
+    liveListingIds: [...renderedLiveListingIds()],
+    selected_count: selectedListingIds.size
   });
+  showSendDebug(`SEND_SELECTED_CLICK selected ${selectedListingIds.size}: ${[...selectedListingIds].join(",") || "none"}`);
   const batch = requireSelectedProducts();
   if (!batch.length) {
     console.warn("[SEND SELECTED BLOCKED EMPTY_SELECTION]", {
