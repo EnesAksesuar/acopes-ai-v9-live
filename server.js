@@ -2430,6 +2430,15 @@ async function discoverEtsyShop(tokens, context = {}) {
     throw error;
   }
   if (!resolvedShopId) {
+    if (ETSY_SHOP_ID_ENV) {
+      etsyDebug("Falling back to ETSY_SHOP_ID env var", { shop_id: ETSY_SHOP_ID_ENV, shop_name: FALLBACK_SHOP_NAME });
+      const fallback = { ...tokens, shop_id: ETSY_SHOP_ID_ENV, shop_name: FALLBACK_SHOP_NAME || tokens.shop_name || "" };
+      if (context.req?.session) {
+        context.req.session.etsy_shop_id = ETSY_SHOP_ID_ENV;
+        context.req.session.etsy_shop_name = FALLBACK_SHOP_NAME || "";
+      }
+      return fallback;
+    }
     etsyDebug("No seller shop found for Etsy user", {
       user_id: userId,
       shops_seen: foundShopCount,
@@ -2662,15 +2671,6 @@ function mergeEtsyUpdatePayload(optimizedPayload = {}, listing = {}) {
   if (optimizedPayload.description || currentPayload.description) payload.description = optimizedPayload.description || currentPayload.description;
   if (Array.isArray(optimizedPayload.tags) && optimizedPayload.tags.length) payload.tags = optimizedPayload.tags;
   else if (Array.isArray(currentPayload.tags) && currentPayload.tags.length) payload.tags = currentPayload.tags;
-  const passthroughFields = ["who_made", "when_made", "taxonomy_id", "shipping_profile_id", "return_policy_id"];
-  for (const field of passthroughFields) {
-    if (listing[field] !== undefined && listing[field] !== null && String(listing[field]).trim() !== "") {
-      payload[field] = listing[field];
-    }
-  }
-  if (listing.state || payload.title || payload.description || payload.tags) {
-    payload.state = listing.state || "active";
-  }
   return payload;
 }
 
