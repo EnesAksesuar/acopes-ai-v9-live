@@ -99,6 +99,7 @@ async function loadAppConfig() {
 const productsEl = document.querySelector("#products");
 const logsEl = document.querySelector("#logs");
 const statusEl = document.querySelector("#status");
+const optimizeSelectedBtn = document.querySelector("#optimizeSelected");
 const sendSelectedBtn = document.querySelector("#sendSelected");
 const sendBatchBtn = document.querySelector("#sendBatch");
 const refreshListingsBtn = document.querySelector("#refreshListings");
@@ -146,6 +147,10 @@ let quickAnalyzerResultEl = null;
 if (sendBatchBtn) {
   sendBatchBtn.title = "Send optimized selected listings to Etsy";
   sendBatchBtn.setAttribute("aria-label", "Send optimized selected listings to Etsy");
+}
+if (optimizeSelectedBtn) {
+  optimizeSelectedBtn.title = "Generate AI optimization for the selected listing";
+  optimizeSelectedBtn.setAttribute("aria-label", "Generate AI optimization for the selected listing");
 }
 if (sendSelectedBtn) {
   sendSelectedBtn.title = "Send optimized selected listings to Etsy";
@@ -1059,8 +1064,12 @@ async function activateEtsyConnectToken() {
   }
 }
 
+function listingIdFor(item = {}) {
+  return String(item?.listing_id || item?.id || "").trim();
+}
+
 function productSelectionId(product = {}, index = 0) {
-  return String(product.listing_id || "");
+  return listingIdFor(product);
 }
 
 function pruneSelectedListings() {
@@ -1078,10 +1087,15 @@ function pruneSelectedListings() {
 function liveListingIds() {
   const ids = new Set(
     products
-      .filter((product) => String(product.sync_source || "").toLowerCase() === "etsy_api" && /^\d+$/.test(String(product.listing_id || "")) && !BLOCKED_STALE_LISTING_IDS.has(String(product.listing_id || "")))
-      .map((product) => String(product.listing_id))
+      .map((product) => ({ product, id: listingIdFor(product) }))
+      .filter(({ product, id }) => String(product.sync_source || "").toLowerCase() === "etsy_api" && /^\d+$/.test(id) && !BLOCKED_STALE_LISTING_IDS.has(id))
+      .map(({ id }) => id)
   );
-  console.log("[LIVE LISTING IDS REBUILT]", [...ids]);
+  console.log("[LIVE LISTING IDS BUILT]", {
+    count: ids.size,
+    sample_ids: [...ids].slice(0, 10),
+    includes_4378230966: ids.has("4378230966")
+  });
   return ids;
 }
 
@@ -1091,12 +1105,12 @@ function renderedLiveListingIds() {
       .map((card) => String(card.dataset.listingId || ""))
       .filter(Boolean)
   );
-  return renderedIds.size ? renderedIds : liveListingIds();
+  return new Set([...liveListingIds(), ...renderedIds]);
 }
 
 function selectedLiveProducts() {
   const liveIds = renderedLiveListingIds();
-  return selectedProducts().filter((product) => liveIds.has(String(product.listing_id || "")));
+  return selectedProducts().filter((product) => liveIds.has(listingIdFor(product)));
 }
 
 function pruneStaleOptimizationState(source = "state", ids = liveListingIds()) {
@@ -1132,7 +1146,7 @@ function pruneStaleOptimizationState(source = "state", ids = liveListingIds()) {
 
 function liveListingById(id = "") {
   const target = String(id || "");
-  return products.find((product) => String(product.listing_id || "") === target && String(product.sync_source || "").toLowerCase() === "etsy_api") || null;
+  return products.find((product) => listingIdFor(product) === target && String(product.sync_source || "").toLowerCase() === "etsy_api") || null;
 }
 
 function pruneRecordsAgainstLiveCache(records = [], label = "state") {
@@ -1201,7 +1215,7 @@ function selectedProducts() {
     });
   }
   pruneSelectedListings();
-  return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)) && liveListingIds().has(String(product.listing_id || "")));
+  return products.filter((product, index) => selectedListingIds.has(productSelectionId(product, index)) && liveListingIds().has(listingIdFor(product)));
 }
 
 function rebuildSelectedListingIdsFromDom() {
@@ -1867,19 +1881,19 @@ function renderProducts() {
   }
   productsEl.innerHTML = visibleProducts
     .map((product) => {
-      if (String(product.listing_id) === "4384247178") return "";
-      const index = products.findIndex((item) => String(item.listing_id || "") === String(product.listing_id || ""));
+      const listingId = listingIdFor(product);
+      if (listingId === "4384247178") return "";
+      const index = products.findIndex((item) => listingIdFor(item) === listingId);
       const selectionId = productSelectionId(product, index);
-      const optimization = latestByListing.get(String(product.listing_id));
-      const debugInfo = listingOptimizationDebug.get(String(product.listing_id));
-      const pendingMessage = pendingOptimizationByListing.get(String(product.listing_id)) || product.optimization_pending_message || "";
+      const optimization = latestByListing.get(listingId);
+      const debugInfo = listingOptimizationDebug.get(listingId);
+      const pendingMessage = pendingOptimizationByListing.get(listingId) || product.optimization_pending_message || "";
       const isPendingValidation = Boolean(product.optimization_pending_validation || pendingMessage);
       const displayAfter = isPendingValidation ? null : optimization?.after || null;
       const optimizedTitle = optimizedTitleFrom(displayAfter, product);
       const optimizedDescription = optimizedDescriptionFrom(displayAfter);
       const optimizedTags = optimizedTagsFrom(displayAfter);
       const outputSource = optimization?.final_output_source || displayAfter?.final_output_source || "";
-      const listingId = String(product.listing_id || "");
       console.log("[CARD RENDER IMAGE]", listingId, product.image_url || product.thumbnail_url || "");
       const animated = optimization && !seenOptimizationIds.has(optimization.id) ? "is-fresh" : "";
       const thumbnailHtml = listingId
@@ -2485,7 +2499,7 @@ async function sendSingle(product) {
     return;
   }
   setStatus("Sending");
-  sendSelectedBtn.disabled = true;
+  if (optimizeSelectedBtn) optimizeSelectedBtn.disabled = true;
   clearOptimizationState(product, "Validating optimization...");
   try {
     console.log("CALLING OPTIMIZATION ENDPOINT", product);
@@ -2540,7 +2554,7 @@ async function sendSingle(product) {
     clearOptimizationPending(product);
     showToast("API unavailable. Optimization could not be queued.", "error");
   } finally {
-    sendSelectedBtn.disabled = false;
+    if (optimizeSelectedBtn) optimizeSelectedBtn.disabled = false;
   }
 }
 
@@ -2560,9 +2574,15 @@ async function sendBatch(productsToSend) {
   sendBatchBtn.textContent = "Sending...";
   try {
     const liveIds = renderedLiveListingIds();
-    console.log("[SEND BATCH SELECTED IDS]", productsToSend.map((listing) => String(listing.listing_id || listing.id || "")));
+    const selectedIds = productsToSend.map(listingIdFor).filter(Boolean);
+    console.log("[SEND BATCH SELECTED IDS]", selectedIds);
     console.log("[SEND BATCH LIVE IDS]", [...liveIds]);
-    console.log("[SEND PRECHECK LIVE IDS]", [...liveIds]);
+    console.log("[SEND PRECHECK LIVE IDS]", {
+      count: liveIds.size,
+      sample_ids: [...liveIds].slice(0, 10),
+      includes_4378230966: liveIds.has("4378230966")
+    });
+    console.log("[SEND PRECHECK SELECTED IDS]", selectedIds);
     console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
     pruneStaleOptimizationState("before_send", liveIds);
     [...selectedListingIds].forEach((id) => {
@@ -2572,30 +2592,33 @@ async function sendBatch(productsToSend) {
       }
     });
     productsToSend = productsToSend.filter((listing) => {
-      const id = String(listing.listing_id || "");
+      const id = listingIdFor(listing);
       const keep = liveIds.has(id) && !BLOCKED_STALE_LISTING_IDS.has(id);
       console.log("[SEND BATCH ID MATCH CHECK]", { listing_id: id || "missing", matched: keep });
-      if (!keep) console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
+      if (!keep) {
+        console.log("[SEND PRECHECK MISSING LIVE ID]", { listing_id: id || "missing" });
+        console.log("[FRONTEND SEND BLOCKED STALE ID]", { listing_id: id || "missing" });
+      }
       return keep;
     });
     if (!productsToSend.length) {
-      showToast("Refresh listings and regenerate optimization", "error");
+      showToast("Refresh Etsy Listings first or listing is not active.", "error");
       setStatus("Failed");
       return;
     }
     console.log("[SEND BATCH LIVE IDS ONLY]", [...liveIds]);
     console.log("[FRONTEND SEND SELECTED]", { selectedIds: productsToSend.map((listing) => String(listing.listing_id || "")) });
-    if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(String(listing.listing_id || "")) || !liveIds.has(String(listing.listing_id || "")))) {
-      console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map((listing) => String(listing.listing_id || "")) });
-      showToast("Refresh listings and regenerate optimization", "error");
+    if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(listingIdFor(listing)) || !liveIds.has(listingIdFor(listing)))) {
+      console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map(listingIdFor) });
+      showToast("Refresh Etsy Listings first or listing is not active.", "error");
       setStatus("Failed");
       return;
     }
-    const safeBatch = productsToSend.filter((listing) => liveIds.has(String(listing.listing_id)) && String(listing.listing_id) !== "4384247178");
-    const readyIds = safeBatch.filter((listing) => optimizationReadyForListing(listing).ready).map((listing) => String(listing.listing_id || ""));
+    const safeBatch = productsToSend.filter((listing) => liveIds.has(listingIdFor(listing)) && listingIdFor(listing) !== "4384247178");
+    const readyIds = safeBatch.filter((listing) => optimizationReadyForListing(listing).ready).map(listingIdFor);
     console.log("[SEND READY IDS]", readyIds);
     const productsWithOptimizations = safeBatch.map((listing) => {
-      const listingId = String(listing.listing_id || "");
+      const listingId = listingIdFor(listing);
       const readyState = optimizationReadyForListing(listing);
       const record = readyState.record;
       const after = record?.after || {
@@ -2793,6 +2816,22 @@ async function initializeDashboard() {
   }
   await refreshLogs();
 }
+
+optimizeSelectedBtn?.addEventListener("click", async () => {
+  rebuildSelectedListingIdsFromDom();
+  console.log("[OPTIMIZE SELECTED CLICK]", {
+    selectedListingIds: [...selectedListingIds],
+    liveListingIds: [...renderedLiveListingIds()]
+  });
+  if (optimizeSelectedBtn.disabled && selectedProducts().length) optimizeSelectedBtn.disabled = false;
+  const [product] = requireSelectedProducts();
+  if (!product) {
+    showToast("Select at least one listing first.", "error");
+    setStatus("Failed");
+    return;
+  }
+  await sendSingle(product);
+});
 
 sendSelectedBtn?.addEventListener("click", async () => {
   rebuildSelectedListingIdsFromDom();
