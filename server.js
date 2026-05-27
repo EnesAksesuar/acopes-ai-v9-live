@@ -2806,7 +2806,11 @@ function normalizeSendResult(result = {}) {
     ...(typeof result.verified === "boolean" ? { verified: result.verified } : {}),
     ...(result.verification ? { verification: result.verification } : {}),
     ...(result.message ? { message: result.message } : {}),
-    ...(result.etsy_response ? { etsy_response: result.etsy_response } : {})
+    ...(result.etsy_response ? { etsy_response: result.etsy_response } : {}),
+    ...(result.verify_endpoint_used ? { verify_endpoint_used: result.verify_endpoint_used } : {}),
+    ...(result.verify_state ? { verify_state: result.verify_state } : {}),
+    ...(result.verify_shop_id ? { verify_shop_id: result.verify_shop_id } : {}),
+    ...(result.verify_reason ? { verify_reason: result.verify_reason } : {})
   };
 }
 
@@ -2836,6 +2840,19 @@ function etsyListingShopId(listing = {}) {
 function etsyListingIsLive(listing = {}) {
   const state = String(listing.state || listing.status || "active").trim().toLowerCase();
   return !["inactive", "expired", "sold_out", "removed", "deleted", "draft"].includes(state);
+}
+
+function etsyListingState(listing = {}) {
+  return String(listing.state || listing.status || "").trim();
+}
+
+function etsyVerifyReason(result = {}) {
+  if (result.found) return "accepted";
+  if (result.shopMatch === false) return "shop_mismatch";
+  if (result.active === false) return "not_active";
+  if (Number(result.status || 0) === 404) return "not_found";
+  if (Number(result.status || 0) === 401 || Number(result.status || 0) === 403) return "auth_or_permission";
+  return result.error ? "request_failed" : "etsy_api_failed";
 }
 
 async function pruneListingFromCache(listingId = "", shopId = "") {
@@ -2876,11 +2893,15 @@ async function safeEtsyStatus(tokens = {}) {
 
 async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "") {
   const endpoints = [
-    `${ETSY_API_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}`,
-    `${ETSY_API_BASE}/listings/${encodeURIComponent(listingId)}`
+    { type: "private", endpoint: `${ETSY_API_BASE}/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(listingId)}` },
+    { type: "public", endpoint: `${ETSY_API_BASE}/listings/${encodeURIComponent(listingId)}` },
+    { type: "public", endpoint: `${ETSY_API_FALLBACK_BASE}/listings/${encodeURIComponent(listingId)}` }
   ];
-  let lastResult = { found: false, status: 0, body: null, endpoint: endpoints[0] };
-  for (const endpoint of endpoints) {
+  let privateResult = null;
+  let lastResult = { found: false, status: 0, body: null, endpoint: endpoints[0].endpoint, endpointType: "private" };
+  for (const { type, endpoint } of endpoints) {
+    console.log("[ETSY VERIFY ENDPOINT TRY]", { endpoint_type: type, endpoint, shop_id: shopId, listing_id: listingId });
+    if (type === "public") console.log("[ETSY VERIFY PUBLIC FALLBACK]", { endpoint, shop_id: shopId, listing_id: listingId });
     console.log("[DIRECT VERIFY ETSY LISTING]", { endpoint, shop_id: shopId, listing_id: listingId });
     console.log("[DIRECT LISTING VERIFY]", { endpoint, shop_id: shopId, listing_id: listingId });
     let response;
@@ -2894,7 +2915,7 @@ async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "")
         listing_id: listingId,
         error: error instanceof Error ? error.message : String(error)
       });
-      lastResult = { found: false, status: 0, body: null, endpoint, error: error instanceof Error ? error.message : String(error) };
+      lastResult = { found: false, status: 0, body: null, endpoint, endpointType: type, error: error instanceof Error ? error.message : String(error) };
       continue;
     }
     const text = await response.text();
@@ -2908,12 +2929,56 @@ async function directVerifyEtsyListing(tokens = {}, shopId = "", listingId = "")
     const responseShopId = etsyListingShopId(listing);
     const shopMatch = !responseShopId || responseShopId === normalizeListingId(shopId);
     const active = etsyListingIsLive(listing);
-    lastResult = { found: response.ok && shopMatch && active, status: response.status, body, endpoint, shopMatch, active, responseShopId };
+    const verifyState = etsyListingState(listing);
+    lastResult = { found: response.ok && shopMatch && active, status: response.status, body, endpoint, endpointType: type, shopMatch, active, responseShopId, verify_state: verifyState };
     console.log("[DIRECT LISTING VERIFY]", { listing_id: listingId, status: response.status, found: lastResult.found, shopMatch, active, responseShopId, body });
     console.log("[SEND VERIFY RESULT]", { listing_id: listingId, status: response.status, found: lastResult.found, shopMatch, active, responseShopId });
-    if (response.ok || response.status !== 404) return lastResult;
+    console.log(type === "private" ? "[ETSY VERIFY PRIVATE RESULT]" : "[ETSY VERIFY PUBLIC RESULT]", {
+      listing_id: listingId,
+      status: response.status,
+      found: lastResult.found,
+      shopMatch,
+      active,
+      verify_state: verifyState,
+      verify_shop_id: responseShopId,
+      endpoint
+    });
+    if (type === "private") privateResult = lastResult;
+    if (lastResult.found) {
+      console.log("[ETSY VERIFY ACCEPTED]", {
+        listing_id: listingId,
+        verify_endpoint_used: endpoint,
+        verify_state: verifyState,
+        verify_shop_id: responseShopId,
+        verify_reason: "accepted"
+      });
+      return lastResult;
+    }
+    if (response.ok && !lastResult.found) {
+      console.log("[ETSY VERIFY REJECTED]", {
+        listing_id: listingId,
+        verify_endpoint_used: endpoint,
+        verify_state: verifyState,
+        verify_shop_id: responseShopId,
+        verify_reason: etsyVerifyReason(lastResult)
+      });
+      return lastResult;
+    }
+    if (response.status !== 404 && type !== "private") return lastResult;
   }
+  console.log("[ETSY VERIFY REJECTED]", {
+    listing_id: listingId,
+    verify_endpoint_used: lastResult.endpoint,
+    verify_state: lastResult.verify_state || "",
+    verify_shop_id: lastResult.responseShopId || "",
+    verify_reason: etsyVerifyReason(lastResult),
+    private_status: privateResult?.status || null
+  });
   return lastResult;
+}
+
+async function verifyEtsyListingForSend(tokens = {}, shopId = "", listingId = "") {
+  return directVerifyEtsyListing(tokens, shopId, listingId);
 }
 
 async function updateEtsyListingDirect(req, res, product = {}) {
@@ -2992,59 +3057,50 @@ async function updateEtsyListingDirect(req, res, product = {}) {
 
   const listingPath = `/shops/${encodeURIComponent(shopId)}/listings/${encodeURIComponent(liveListingId)}`;
   const etsyUpdateBase = ETSY_API_BASE;
-  const verifyEndpoint = `${etsyUpdateBase}${listingPath}`;
+  const preUpdateVerify = await verifyEtsyListingForSend(tokens, shopId, liveListingId);
+  let verifyEndpoint = preUpdateVerify.endpoint || `${etsyUpdateBase}${listingPath}`;
+  let verifyPayload = preUpdateVerify.body || {};
+  console.log("[ETSY VERIFY LISTING RESPONSE]", {
+    status: preUpdateVerify.status,
+    body: verifyPayload,
+    verify_endpoint_used: preUpdateVerify.endpoint || "",
+    verify_state: preUpdateVerify.verify_state || "",
+    verify_shop_id: preUpdateVerify.responseShopId || "",
+    verify_reason: etsyVerifyReason(preUpdateVerify)
+  });
+  if (!preUpdateVerify.found) {
+    if (Number(preUpdateVerify.status || 0) === 404) {
+      console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: shopId, listing_id: liveListingId, reason: "direct_verify_404" });
+      const syncedListings = await syncEtsyListings(tokens, res, req);
+      const syncedIds = liveEtsyApiListingIds(syncedListings);
+      console.log("[LIVE IDS AFTER FORCE SYNC]", { count: syncedIds.size, first_10_listing_ids: [...syncedIds].slice(0, 10) });
+    }
+    const retryVerify = Number(preUpdateVerify.status || 0) === 404 ? await verifyEtsyListingForSend(tokens, shopId, liveListingId) : preUpdateVerify;
+    if (!retryVerify.found) {
+      if (Number(retryVerify.status || 0) === 404) await pruneListingFromCache(liveListingId, shopId);
+      const error = new Error(retryVerify.shopMatch === false ? "Listing belongs to a different Etsy shop." : "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.");
+      error.code = retryVerify.shopMatch === false ? "shop_mismatch" : "etsy_resource_not_found";
+      error.status = retryVerify.shopMatch === false ? 409 : Number(retryVerify.status || 404);
+      error.payload = {
+        shop_id: shopId,
+        listing_id: liveListingId,
+        etsy_status: retryVerify.status,
+        etsy_body: retryVerify.body,
+        verify_endpoint_used: retryVerify.endpoint || "",
+        verify_state: retryVerify.verify_state || "",
+        verify_shop_id: retryVerify.responseShopId || "",
+        verify_reason: etsyVerifyReason(retryVerify)
+      };
+      throw error;
+    }
+    verifyEndpoint = retryVerify.endpoint || verifyEndpoint;
+    verifyPayload = retryVerify.body || {};
+  }
   console.log("[DIRECT LISTING VERIFY]", {
     endpoint: verifyEndpoint,
     shop_id: shopId,
     listing_id: liveListingId
   });
-  let verifyResponse = await fetch(verifyEndpoint, {
-    method: "GET",
-    headers: etsyApiHeaders(tokens.access_token)
-  });
-  let verifyText = await verifyResponse.text();
-  let verifyPayload = {};
-  try {
-    verifyPayload = verifyText ? JSON.parse(verifyText) : {};
-  } catch {
-    verifyPayload = verifyText;
-  }
-  console.log("[ETSY VERIFY LISTING RESPONSE]", {
-    status: verifyResponse.status,
-    body: verifyPayload
-  });
-  if (verifyResponse.status === 404) {
-    console.log("[FORCE LIVE SYNC BEFORE SEND]", { shop_id: shopId, listing_id: liveListingId, reason: "direct_verify_404" });
-    const syncedListings = await syncEtsyListings(tokens, res, req);
-    const syncedIds = liveEtsyApiListingIds(syncedListings);
-    console.log("[LIVE IDS AFTER FORCE SYNC]", { count: syncedIds.size, first_10_listing_ids: [...syncedIds].slice(0, 10) });
-    if (syncedIds.has(liveListingId)) {
-      console.log("[DIRECT LISTING VERIFY]", { listing_id: liveListingId, matched_after_force_sync: true });
-      verifyResponse = await fetch(verifyEndpoint, {
-        method: "GET",
-        headers: etsyApiHeaders(tokens.access_token)
-      });
-      verifyText = await verifyResponse.text();
-      try {
-        verifyPayload = verifyText ? JSON.parse(verifyText) : {};
-      } catch {
-        verifyPayload = verifyText;
-      }
-    }
-    if (verifyResponse.status === 404) {
-      await pruneListingFromCache(liveListingId, shopId);
-      const error = new Error("This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.");
-      error.code = "etsy_resource_not_found";
-      error.status = 404;
-      error.payload = {
-        shop_id: shopId,
-        listing_id: liveListingId,
-        etsy_status: verifyResponse.status,
-        etsy_body: verifyPayload
-      };
-      throw error;
-    }
-  }
   const currentListing = Array.isArray(verifyPayload?.results)
     ? verifyPayload.results[0] || {}
     : verifyPayload;
@@ -3053,31 +3109,26 @@ async function updateEtsyListingDirect(req, res, product = {}) {
   const currentListingLive = etsyListingIsLive(currentListing);
   console.log("[SEND VERIFY RESULT]", {
     listing_id: liveListingId,
-    status: verifyResponse.status,
-    found: verifyResponse.ok,
+    status: preUpdateVerify.status,
+    found: preUpdateVerify.found,
     shopMatch: currentShopMatches,
     active: currentListingLive,
     responseShopId: currentShopId
   });
-  if (!verifyResponse.ok) {
-    const error = new Error("Etsy listing verification failed before update.");
-    error.code = verifyResponse.status === 404 ? "etsy_resource_not_found" : "etsy_api_failed";
-    error.status = verifyResponse.status || 502;
-    error.payload = {
-      shop_id: shopId,
-      listing_id: liveListingId,
-      etsy_status: verifyResponse.status,
-      etsy_body: verifyPayload
-    };
-    if (verifyResponse.status === 404) await pruneListingFromCache(liveListingId, shopId);
-    throw error;
-  }
   if (!currentShopMatches) {
     console.warn("[SEND BLOCKED SHOP_MISMATCH]", { listing_id: liveListingId, shop_id: shopId, response_shop_id: currentShopId });
     const error = new Error("Listing belongs to a different Etsy shop.");
     error.code = "shop_mismatch";
     error.status = 409;
-    error.payload = { shop_id: shopId, listing_id: liveListingId, response_shop_id: currentShopId };
+    error.payload = {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      response_shop_id: currentShopId,
+      verify_endpoint_used: verifyEndpoint,
+      verify_state: etsyListingState(currentListing),
+      verify_shop_id: currentShopId,
+      verify_reason: "shop_mismatch"
+    };
     throw error;
   }
   if (!currentListingLive) {
@@ -3086,7 +3137,15 @@ async function updateEtsyListingDirect(req, res, product = {}) {
     const error = new Error("This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.");
     error.code = "etsy_resource_not_found";
     error.status = 404;
-    error.payload = { shop_id: shopId, listing_id: liveListingId, state: currentListing?.state || currentListing?.status || "" };
+    error.payload = {
+      shop_id: shopId,
+      listing_id: liveListingId,
+      state: currentListing?.state || currentListing?.status || "",
+      verify_endpoint_used: verifyEndpoint,
+      verify_state: etsyListingState(currentListing),
+      verify_shop_id: currentShopId,
+      verify_reason: "not_active"
+    };
     throw error;
   }
   console.log("[ETSY CURRENT LISTING]", {
@@ -4257,7 +4316,11 @@ async function handleSendBatch(req, res) {
               listing_id: listingId,
               status: "skipped",
               reason: blockedReason,
-              message: blockedReason === "shop_mismatch" ? "This listing does not belong to the connected Etsy shop." : "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings."
+              message: blockedReason === "shop_mismatch" ? "This listing does not belong to the connected Etsy shop." : "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.",
+              verify_endpoint_used: directVerify.endpoint || "",
+              verify_state: directVerify.verify_state || "",
+              verify_shop_id: directVerify.responseShopId || "",
+              verify_reason: etsyVerifyReason(directVerify)
             }));
             continue;
           }
@@ -4271,7 +4334,11 @@ async function handleSendBatch(req, res) {
             status: "failed",
             reason,
             message: reason === "etsy_permission_or_approval_issue" ? "Etsy permission/API approval issue" : "Etsy API unavailable",
-            etsy_response: directVerify.body || directVerify.error || null
+            etsy_response: directVerify.body || directVerify.error || null,
+            verify_endpoint_used: directVerify.endpoint || "",
+            verify_state: directVerify.verify_state || "",
+            verify_shop_id: directVerify.responseShopId || "",
+            verify_reason: etsyVerifyReason(directVerify)
           }));
           continue;
         }
@@ -4367,7 +4434,11 @@ async function handleSendBatch(req, res) {
             status: "skipped",
             reason: skippedReason,
             message: skippedReason === "shop_mismatch" ? "This listing does not belong to the connected Etsy shop." : "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.",
-            etsy_response: error?.payload || null
+            etsy_response: error?.payload || null,
+            verify_endpoint_used: error?.payload?.verify_endpoint_used || "",
+            verify_state: error?.payload?.verify_state || "",
+            verify_shop_id: error?.payload?.verify_shop_id || "",
+            verify_reason: error?.payload?.verify_reason || skippedReason
           }));
           continue;
         }
@@ -4393,7 +4464,11 @@ async function handleSendBatch(req, res) {
           status: "failed",
           reason,
           message: etsyErrorMessage(error?.payload?.etsy_body || error?.payload || {}, error instanceof Error ? error.message : String(error)),
-          etsy_response: error?.payload || null
+          etsy_response: error?.payload || null,
+          verify_endpoint_used: error?.payload?.verify_endpoint_used || "",
+          verify_state: error?.payload?.verify_state || "",
+          verify_shop_id: error?.payload?.verify_shop_id || "",
+          verify_reason: error?.payload?.verify_reason || reason
         });
         results[results.length - 1] = normalizeSendResult(results[results.length - 1]);
       }
