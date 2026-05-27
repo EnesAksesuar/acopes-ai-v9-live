@@ -39,7 +39,7 @@ let lastToastKey = "";
 let lastToastAt = 0;
 const BLOCKED_STALE_LISTING_IDS = new Set(["4384247178"]);
 const DEBUG_MODE = true;
-const ACOPES_BUILD_STAMP = "ACOPES_BUILD_SEND_SELECTED_DEBUG_001";
+const ACOPES_BUILD_STAMP = "ACOPES AI V9 Live";
 console.log(ACOPES_BUILD_STAMP);
 const IS_DEV_HOST = ["localhost", "127.0.0.1", ""].includes(window.location.hostname);
 const nativeFetch = window.fetch.bind(window);
