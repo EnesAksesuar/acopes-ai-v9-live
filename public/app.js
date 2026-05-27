@@ -1109,6 +1109,7 @@ function pruneSelectedListings() {
 }
 
 function liveListingIds() {
+  const selectedIds = [...selectedListingIds].map(String).filter(Boolean);
   const ids = new Set(
     products
       .map((product) => ({ product, id: listingIdFor(product) }))
@@ -1116,9 +1117,11 @@ function liveListingIds() {
       .map(({ id }) => id)
   );
   console.log("[LIVE LISTING IDS BUILT]", {
-    count: ids.size,
-    sample_ids: [...ids].slice(0, 10),
-    includes_4378230966: ids.has("4378230966")
+    live_ids_count: ids.size,
+    first_20_live_ids: [...ids].slice(0, 20),
+    selected_ids: selectedIds,
+    includes_selected_ids: selectedIds.reduce((acc, id) => ({ ...acc, [id]: ids.has(id) }), {}),
+    missing_selected_ids: selectedIds.filter((id) => !ids.has(id))
   });
   return ids;
 }
@@ -2472,8 +2475,9 @@ async function refreshListings() {
     console.log("[LIVE LISTINGS RAW]", {
       count: products.length,
       first_5_listing_ids: rawListingIds.slice(0, 5),
-      contains_4378230966: rawListingIds.includes("4378230966"),
-      listing_4378230966: products.find((item) => listingIdFor(item) === "4378230966") || null
+      selected_ids: [...selectedListingIds],
+      includes_selected_ids: [...selectedListingIds].reduce((acc, id) => ({ ...acc, [id]: rawListingIds.includes(String(id)) }), {}),
+      missing_selected_ids: [...selectedListingIds].filter((id) => !rawListingIds.includes(String(id)))
     });
     const liveIdsAfterLoad = liveListingIds();
     console.log("[LIVE LISTING IDS REBUILT]", [...liveIdsAfterLoad]);
@@ -2546,9 +2550,11 @@ async function refreshLiveListingsForSendPrecheck(selectedIds = []) {
   });
   const refreshedIds = liveListingIds();
   console.log("[SEND PRECHECK LIVE IDS AFTER REFRESH]", {
-    count: refreshedIds.size,
-    sample_ids: [...refreshedIds].slice(0, 10),
-    includes_4378230966: refreshedIds.has("4378230966")
+    live_ids_count: refreshedIds.size,
+    first_20_live_ids: [...refreshedIds].slice(0, 20),
+    selected_ids: selectedIds,
+    includes_selected_ids: selectedIds.reduce((acc, id) => ({ ...acc, [id]: refreshedIds.has(String(id)) }), {}),
+    missing_selected_ids: selectedIds.filter((id) => !refreshedIds.has(String(id)))
   });
   showSendDebug(`SEND_PRECHECK_LIVE_IDS_AFTER_REFRESH count ${refreshedIds.size}, includes selected ${selectedIds.every((id) => refreshedIds.has(id))}`);
   return refreshedIds;
@@ -2649,9 +2655,11 @@ async function sendBatch(productsToSend) {
     console.log("[SEND BATCH SELECTED IDS]", selectedIds);
     console.log("[SEND BATCH LIVE IDS]", [...liveIds]);
     console.log("[SEND PRECHECK LIVE IDS]", {
-      count: liveIds.size,
-      sample_ids: [...liveIds].slice(0, 10),
-      includes_4378230966: liveIds.has("4378230966")
+      live_ids_count: liveIds.size,
+      first_20_live_ids: [...liveIds].slice(0, 20),
+      selected_ids: selectedIds,
+      includes_selected_ids: selectedIds.reduce((acc, id) => ({ ...acc, [id]: liveIds.has(String(id)) }), {}),
+      missing_selected_ids: selectedIds.filter((id) => !liveIds.has(String(id)))
     });
     console.log("[SEND PRECHECK SELECTED IDS]", selectedIds);
     console.log("[FRONTEND LIVE LISTING IDS BEFORE SEND]", [...liveIds]);
@@ -2693,7 +2701,15 @@ async function sendBatch(productsToSend) {
     }
     console.log("[SEND BATCH LIVE IDS ONLY]", [...liveIds]);
     console.log("[SEND FINAL LIVE IDS]", { count: liveIds.size, first_20_listing_ids: [...liveIds].slice(0, 20) });
-    console.log("[FRONTEND SEND SELECTED]", { selectedIds: productsToSend.map((listing) => String(listing.listing_id || "")) });
+    console.log("[FRONTEND SEND SELECTED]", {
+      selectedIds: productsToSend.map(listingIdFor),
+      products_map: productsToSend.map((listing) => ({
+        listing_id: listingIdFor(listing),
+        title: listing.title || listing.name || "",
+        in_products_map: products.some((product) => listingIdFor(product) === listingIdFor(listing)),
+        in_live_ids: liveIds.has(listingIdFor(listing))
+      }))
+    });
     if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(listingIdFor(listing)) || !liveIds.has(listingIdFor(listing)))) {
       console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map(listingIdFor) });
       showToast("Refresh Etsy Listings first or listing is not active.", "error");
@@ -2736,7 +2752,13 @@ async function sendBatch(productsToSend) {
     const sendPayload = { products: productsWithOptimizations };
     console.log("[SEND SELECTED FETCH START]", {
       endpoint: sendEndpoint,
-      payload: sendPayload
+      payload: sendPayload,
+      payload_listing_ids: productsWithOptimizations.map(listingIdFor),
+      payload_id_match: productsWithOptimizations.map((listing) => ({
+        listing_id: listingIdFor(listing),
+        in_live_ids: liveIds.has(listingIdFor(listing)),
+        in_products_map: products.some((product) => listingIdFor(product) === listingIdFor(listing))
+      }))
     });
     showSendDebug(`SEND_SELECTED_FETCH_START ${sendEndpoint} count ${productsWithOptimizations.length}`);
     const response = await fetch(sendEndpoint, {

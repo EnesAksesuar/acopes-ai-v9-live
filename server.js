@@ -4391,7 +4391,23 @@ async function handleSendBatch(req, res) {
       liveIds = liveEtsyApiListingIds(liveListings);
       console.log("[LIVE IDS AFTER FORCE SYNC]", { count: liveIds.size, first_10_listing_ids: [...liveIds].slice(0, 10) });
       console.log("[SEND SELECTED LIVE IDS]", { liveCount: liveIds.size });
-      console.log("[SEND FINAL LIVE IDS]", { count: liveIds.size, first_20_listing_ids: [...liveIds].slice(0, 20) });
+      console.log("[SEND FINAL LIVE IDS]", {
+        live_ids_count: liveIds.size,
+        first_20_live_ids: [...liveIds].slice(0, 20),
+        selected_ids: requestedIds,
+        includes_selected_ids: requestedIds.reduce((acc, id) => ({ ...acc, [id]: liveIds.has(id) }), {}),
+        missing_selected_ids: requestedIds.filter((id) => !liveIds.has(id))
+      });
+      console.log("[SEND BACKEND LIVE PRODUCT LOOKUP]", requestedIds.map((id) => {
+        const match = liveListings.find((listing) => normalizeListingId(listing.listing_id || listing.id) === id);
+        return {
+          listing_id: id,
+          found_in_live_listings: Boolean(match),
+          sync_source: match?.sync_source || "",
+          state: match?.state || match?.status || "",
+          shop_id: normalizeListingId(match?.shop_id || match?.Shop?.shop_id || "")
+        };
+      }));
     }
     const storedOptimizations = await readRuntimeJson(optimizationsPath, optimizationsSeedPath, []);
     const storedQueue = await readRuntimeJson(queuePath, queueSeedPath, []);
@@ -4409,7 +4425,13 @@ async function handleSendBatch(req, res) {
         results.push(normalizeSendResult({ listing_id: listingId || "unknown", status: "skipped", reason: "missing_listing_id" }));
         continue;
       }
-      console.log("[SEND LIVE CHECK]", { listing_id: listingId, in_live_ids: liveIds.has(listingId), live_count: liveIds.size });
+      console.log("[SEND LIVE CHECK]", {
+        listing_id: listingId,
+        in_live_ids: liveIds.has(listingId),
+        live_count: liveIds.size,
+        selected_ids: requestedIds,
+        missing_selected_ids: requestedIds.filter((id) => !liveIds.has(id))
+      });
       if (directEtsyMode && (!liveIds.has(listingId))) {
         const shopId = normalizeListingId(req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || tokens?.shop_id || "");
         const directVerify = shopId && tokens?.access_token ? await directVerifyEtsyListing(tokens, shopId, listingId) : { found: false, status: 401 };
