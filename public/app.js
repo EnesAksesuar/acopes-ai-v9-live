@@ -2621,6 +2621,10 @@ async function sendSingle(product) {
 }
 
 async function sendBatch(productsToSend) {
+  console.log("[SEND PIPELINE ENTRY]", {
+    selected_count: productsToSend.length,
+    selectedListingIds: [...selectedListingIds]
+  });
   if (!productsToSend.length) {
     console.warn("[SEND SELECTED BLOCKED EMPTY_SELECTION]", {
       selectedListingIds: [...selectedListingIds],
@@ -2637,6 +2641,11 @@ async function sendBatch(productsToSend) {
   try {
     let liveIds = liveListingIds();
     const selectedIds = productsToSend.map(listingIdFor).filter(Boolean);
+    console.log("[SEND LIVE CHECK]", {
+      selectedIds,
+      live_count: liveIds.size,
+      all_selected_live: selectedIds.every((id) => liveIds.has(id))
+    });
     console.log("[SEND BATCH SELECTED IDS]", selectedIds);
     console.log("[SEND BATCH LIVE IDS]", [...liveIds]);
     console.log("[SEND PRECHECK LIVE IDS]", {
@@ -2683,6 +2692,7 @@ async function sendBatch(productsToSend) {
       return;
     }
     console.log("[SEND BATCH LIVE IDS ONLY]", [...liveIds]);
+    console.log("[SEND FINAL LIVE IDS]", { count: liveIds.size, first_20_listing_ids: [...liveIds].slice(0, 20) });
     console.log("[FRONTEND SEND SELECTED]", { selectedIds: productsToSend.map((listing) => String(listing.listing_id || "")) });
     if (productsToSend.some((listing) => BLOCKED_STALE_LISTING_IDS.has(listingIdFor(listing)) || !liveIds.has(listingIdFor(listing)))) {
       console.log("[BLOCKED DEMO ID 4384247178]", { selected: productsToSend.map(listingIdFor) });
@@ -2832,6 +2842,7 @@ function sendReasonLabel(reason = "", status = "failed") {
     not_optimized: "not optimized",
     no_optimized_changes: "no optimized changes",
     not_live_listing: "product not found in live listings",
+    shop_mismatch: "product belongs to a different Etsy shop",
     etsy_permission_or_approval_issue: "Etsy permission/API approval issue",
     etsy_api_unavailable: "Etsy API unavailable",
     etsy_api_failed: "Etsy API failed",
