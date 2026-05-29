@@ -131,6 +131,11 @@ function creditInfo(user) {
   };
 }
 
+// ── Temporary deployment probe (no auth) ─────────────────────────────────────
+router.get('/probe', (_req, res) => {
+  res.json({ probe: 'OWNER_PATCH_ACTIVE_v3', ts: new Date().toISOString() });
+});
+
 // ── CORS (Chrome extension → backend) ────────────────────────────────────────
 router.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
@@ -195,6 +200,27 @@ router.post('/auth/login', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/user/me', requireAuth, (req, res) => {
   try {
+    // ── Hard owner check on JWT email — no DB/migration dependency ───────────
+    if (String(req.tf.email || '').toLowerCase() === 'enesaksesuar1@gmail.com') {
+      return res.json({
+        success:              true,
+        email:                req.tf.email,
+        plan:                 'free',
+        plan_name:            'Owner',
+        plan_price:           '$0',
+        role:                 'owner',
+        account_status:       'active',
+        used_today:           0,
+        daily_limit:          null,
+        daily_limit_override: null,
+        remaining:            null,
+        unlimited:            true,
+        owner_debug:          'OWNER_PATCH_ACTIVE',
+        subscription_status:  null,
+        subscription_renewal: null,
+        billing_provider:     null
+      });
+    }
     let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
     user = freshUser(user);
