@@ -230,10 +230,24 @@ router.get('/user/me', requireAuth, (req, res) => {
     let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
     user = freshUser(user);
-    // Force owner role for OWNER_EMAIL regardless of DB state
-    if (user.email === OWNER_EMAIL && (user.role || 'user') !== 'owner') {
-      db().prepare("UPDATE tagflow_users SET role='owner' WHERE id=?").run(user.id);
-      user = { ...user, role: 'owner' };
+    // ── Hard owner fallback — no dependency on role column or migration ────────
+    const isOwner = String(user.email || '').toLowerCase() === 'enesaksesuar1@gmail.com';
+    if (isOwner) {
+      return res.json({
+        success:              true,
+        email:                user.email,
+        plan:                 user.plan || 'free',
+        plan_name:            'Owner',
+        role:                 'owner',
+        account_status:       'active',
+        used_today:           0,
+        daily_limit:          null,
+        remaining:            null,
+        unlimited:            true,
+        billing_provider:     user.billing_provider     || null,
+        subscription_status:  user.subscription_status  || null,
+        subscription_renewal: user.subscription_renewal || null
+      });
     }
     const info = creditInfo(user);
     console.log('[ME RESPONSE]', { email: user.email, role: info.role, daily_limit: info.daily_limit });
