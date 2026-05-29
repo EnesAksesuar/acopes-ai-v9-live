@@ -122,29 +122,24 @@
     }
 
     // ── Billing card (separate card below account card) ──────────────────────
-    if (billingCardEl) {
-      billingCardEl.style.display = 'block';
-      if (billingPlanBadgeEl) {
-        billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
-        billingPlanBadgeEl.className   = 'plan-badge ' + plan;
-      }
-      if (billingUpgradeSect && billingBtnPremium && billingBtnPower && billingBestPlanEl) {
-        if (plan === 'free') {
-          billingUpgradeSect.style.display  = 'flex';
-          billingBtnPremium.style.display   = '';
-          billingBtnPower.style.display     = '';
-          billingBestPlanEl.style.display   = 'none';
-        } else if (plan === 'premium') {
-          billingUpgradeSect.style.display  = 'flex';
-          billingBtnPremium.style.display   = 'none';
-          billingBtnPower.style.display     = '';
-          billingBestPlanEl.style.display   = 'none';
-        } else {
-          // power — already on best plan
-          billingUpgradeSect.style.display  = 'none';
-          billingBestPlanEl.style.display   = 'block';
-        }
-      }
+    console.log('[BILLING CARD MOUNTED] plan=' + plan);
+    billingCardEl.style.display = 'block';                       // force visible
+    billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
+    billingPlanBadgeEl.className   = 'plan-badge ' + plan;
+    if (plan === 'free') {
+      billingUpgradeSect.style.display = 'flex';
+      billingBtnPremium.style.display  = '';
+      billingBtnPower.style.display    = '';
+      billingBestPlanEl.style.display  = 'none';
+    } else if (plan === 'premium') {
+      billingUpgradeSect.style.display = 'flex';
+      billingBtnPremium.style.display  = 'none';
+      billingBtnPower.style.display    = '';
+      billingBestPlanEl.style.display  = 'none';
+    } else {
+      // power — already on best plan
+      billingUpgradeSect.style.display = 'none';
+      billingBestPlanEl.style.display  = 'block';
     }
   }
 
@@ -189,6 +184,7 @@
       const { ok, data } = await api('/api/tagflow/user/me', null, token);
       if (ok && data.success) {
         showLoggedIn(data);
+        billingCardEl.style.display = 'block';                   // force after call
       } else {
         // Token expired / invalid → clear and show login
         chrome.storage.local.remove('tagflowToken');
@@ -225,6 +221,7 @@
         chrome.storage.local.set({ tagflowToken: data.token }, function () {
           toast('✅ ' + (isSignup ? 'Hesap oluşturuldu!' : 'Giriş başarılı!'), 'ok');
           showLoggedIn(data);
+          billingCardEl.style.display = 'block';                 // force after call
         });
       } else {
         toast('❌ ' + (data.error || 'Bir hata oluştu.'), 'err');
