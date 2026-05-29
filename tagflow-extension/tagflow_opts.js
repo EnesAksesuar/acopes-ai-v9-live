@@ -67,7 +67,7 @@
     cardTitle.textContent      = isSignup ? 'Ücretsiz Kayıt' : 'Giriş Yap';
   }
 
-  // ── API call helper ───────────────────────────────────────────────────────
+  // ── API call helper (safe JSON parsing) ──────────────────────────────────
   async function api(path, body, token) {
     const opts = {
       method:  body ? 'POST' : 'GET',
@@ -76,7 +76,17 @@
     if (token)  opts.headers['authorization'] = 'Bearer ' + token;
     if (body)   opts.body = JSON.stringify(body);
     const res  = await fetch(BACKEND + path, opts);
-    const data = await res.json();
+
+    // Read raw text first — res.json() throws an opaque error if the server
+    // returns HTML (e.g. a proxy 404 or crash page). This gives us the body.
+    const text = await res.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch (_) {
+      // Not JSON — surface status + first 200 chars so the bug is visible
+      throw new Error(`HTTP ${res.status} — sunucu beklenmedik yanıt döndürdü: ${text.slice(0, 200)}`);
+    }
     return { ok: res.ok, status: res.status, data };
   }
 
