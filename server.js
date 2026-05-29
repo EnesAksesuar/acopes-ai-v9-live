@@ -3,12 +3,13 @@ import express from "express";
 import cookieSession from "cookie-session";
 import jwt from "jsonwebtoken";
 import fs from "node:fs/promises";
-import { DatabaseSync } from "node:sqlite";
 import nodeCrypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startQueueWorker } from "./workers/acopes-queue-worker.js";
-import tagflowRouter       from "./workers/tagflow-router.js";
+// node:sqlite and tagflow-router loaded dynamically below (require Node 22+)
+let DatabaseSync;
+let tagflowRouter;
 
 process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED:", err?.stack || err);
@@ -24,13 +25,23 @@ console.log("ENV DEBUG", {
 
 const app = express();
 await loadDotEnv(path.join(__dirname, ".env"));
+
+// ── Dynamic imports — guard against Node <22 where node:sqlite is unavailable ─
+try { ({ DatabaseSync } = await import("node:sqlite")); }
+catch { console.warn("[server] node:sqlite unavailable — sqlite features disabled"); }
+
+try { ({ default: tagflowRouter } = await import("./workers/tagflow-router.js")); }
+catch (e) { console.warn("[server] tagflow-router not loaded:", e.message); }
+// ─────────────────────────────────────────────────────────────────────────────
+
 const PORT = process.env.PORT || 4173;
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 const runtimeDataDir = path.join(process.env.ACOPES_DATA_DIR || "/tmp", "acopes-ai");
 const seedDataDir = path.join(__dirname, "data");
 const WEBHOOK_URL = (process.env.MAKE_WEBHOOK_URL || "").trim();
 const MAKE_RESPONSE_SECRET = (process.env.MAKE_RESPONSE_SECRET || "").trim();
-const SESSION_SECRET = requireEnv("SESSION_SECRET");
+// SESSION_SECRET: default to empty string so server starts even without the env var
+const SESSION_SECRET = (process.env.SESSION_SECRET || "").trim();
 const ADMIN_SECRET = (process.env.ADMIN_SECRET || "").trim();
 const logsPath = path.join(runtimeDataDir, "automation-logs.json");
 const legacyListingsCachePath = path.join(seedDataDir, "etsy-listings.json");
@@ -103,6 +114,16 @@ function requireEnv(name) {
   return value;
 }
 
+// ── Public static pages — served before any auth/session middleware ───────────
+// These routes never touch SESSION_SECRET, sqlite, or any heavy init.
+const _PUBLIC_DIR = path.join(__dirname, "public");
+app.get("/",              (_req, res) => res.sendFile(path.join(_PUBLIC_DIR, "index.html")));
+app.get("/pricing",       (_req, res) => res.sendFile(path.join(_PUBLIC_DIR, "pricing.html")));
+app.get("/terms",         (_req, res) => res.sendFile(path.join(_PUBLIC_DIR, "terms.html")));
+app.get("/privacy",       (_req, res) => res.sendFile(path.join(_PUBLIC_DIR, "privacy.html")));
+app.get("/refund-policy", (_req, res) => res.sendFile(path.join(_PUBLIC_DIR, "refund-policy.html")));
+// ─────────────────────────────────────────────────────────────────────────────
+
 app.use("/api/make-response", express.text({ type: "*/*", limit: "2mb" }));
 app.use(express.json());
 app.use("/api", (_req, res, next) => {
@@ -141,8 +162,12 @@ app.get("/api/config", (_req, res) => {
 console.log("ROUTE REGISTERED POST /api/test-make-response");
 console.log("Server route order initialized");
 // ── TagFlow SaaS — independent product namespace ──────────────────────────
-app.use('/api/tagflow', tagflowRouter);
-console.log("TAGFLOW ROUTER MOUNTED at /api/tagflow");
+if (tagflowRouter) {
+  app.use('/api/tagflow', tagflowRouter);
+  console.log("TAGFLOW ROUTER MOUNTED at /api/tagflow");
+} else {
+  console.warn("TAGFLOW ROUTER skipped (node:sqlite unavailable — use Railway API)");
+}
 // ─────────────────────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "public")));
 console.log("STATIC MOUNTED");
