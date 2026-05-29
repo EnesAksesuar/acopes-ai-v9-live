@@ -183,6 +183,11 @@ function creditInfo(user) {
   };
 }
 
+// ── Temporary deployment probe (no auth) — DELETE after confirming deploy ─────
+router.get('/probe', (_req, res) => {
+  res.json({ probe: 'OWNER_PATCH_ACTIVE_v3', ts: new Date().toISOString() });
+});
+
 // ── CORS (Chrome extension → backend) ────────────────────────────────────────
 router.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
