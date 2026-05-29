@@ -8,6 +8,7 @@ import nodeCrypto from "node:crypto";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { startQueueWorker } from "./workers/acopes-queue-worker.js";
+import tagflowRouter       from "./workers/tagflow-router.js";
 
 process.on("unhandledRejection", (err) => {
   console.error("UNHANDLED:", err?.stack || err);
@@ -139,6 +140,10 @@ app.get("/api/config", (_req, res) => {
 });
 console.log("ROUTE REGISTERED POST /api/test-make-response");
 console.log("Server route order initialized");
+// ── TagFlow SaaS — independent product namespace ──────────────────────────
+app.use('/api/tagflow', tagflowRouter);
+console.log("TAGFLOW ROUTER MOUNTED at /api/tagflow");
+// ─────────────────────────────────────────────────────────────────────────────
 app.use(express.static(path.join(__dirname, "public")));
 console.log("STATIC MOUNTED");
 
@@ -2905,12 +2910,26 @@ function verifyDiagnosticFields(source = {}) {
     "verify_public_url",
     "verify_openapi_url",
     "verify_final_accepted",
-    "verify_final_reason"
+    "verify_final_reason",
+    "verify_backend_live_lookup_found",
+    "verify_backend_selected_id",
+    "verify_backend_live_ids_count",
+    "verify_backend_first_20_live_ids"
   ];
   return fields.reduce((acc, field) => {
-    if (source[field] !== undefined && source[field] !== null && source[field] !== "") acc[field] = source[field];
+    if (Object.prototype.hasOwnProperty.call(source, field)) acc[field] = source[field];
     return acc;
   }, {});
+}
+
+function backendLiveLookupDiagnostics(listingId = "", liveIds = new Set()) {
+  return {
+    verify_reason: "backend_live_lookup_missing_before_verify",
+    verify_backend_live_lookup_found: false,
+    verify_backend_selected_id: normalizeListingId(listingId),
+    verify_backend_live_ids_count: liveIds instanceof Set ? liveIds.size : 0,
+    verify_backend_first_20_live_ids: liveIds instanceof Set ? [...liveIds].slice(0, 20) : []
+  };
 }
 
 async function pruneListingFromCache(listingId = "", shopId = "") {
@@ -4434,7 +4453,16 @@ async function handleSendBatch(req, res) {
       });
       if (directEtsyMode && (!liveIds.has(listingId))) {
         const shopId = normalizeListingId(req.session?.etsy_auth?.shop_id || req.etsyAuth?.shop_id || tokens?.shop_id || "");
-        const directVerify = shopId && tokens?.access_token ? await directVerifyEtsyListing(tokens, shopId, listingId) : { found: false, status: 401 };
+        const lookupDiagnostics = backendLiveLookupDiagnostics(listingId, liveIds);
+        console.warn("[SEND BACKEND LIVE LOOKUP MISS DIRECT VERIFY]", {
+          listing_id: listingId,
+          shop_id: shopId,
+          has_access_token: Boolean(tokens?.access_token),
+          ...lookupDiagnostics
+        });
+        const directVerify = shopId && tokens?.access_token
+          ? await directVerifyEtsyListing(tokens, shopId, listingId)
+          : { found: false, status: 401, ...lookupDiagnostics };
         console.log("[SEND VERIFY RESULT]", {
           listing_id: listingId,
           status: directVerify.status,
@@ -4470,7 +4498,7 @@ async function handleSendBatch(req, res) {
               selectedIds: requestedIds,
               body_keys: Object.keys(req.body || {})
             });
-            results.push(normalizeSendResult({
+            const skipResult = {
               listing_id: listingId,
               status: "skipped",
               reason: blockedReason,
@@ -4480,7 +4508,9 @@ async function handleSendBatch(req, res) {
               verify_state: directVerify.verify_state || "",
               verify_shop_id: directVerify.responseShopId || "",
               verify_reason: etsyVerifyReason(directVerify)
-            }));
+            };
+            console.log("[SEND RESULT VERIFY DIAGNOSTICS ATTACHED]", verifyDiagnosticFields(skipResult));
+            results.push(normalizeSendResult(skipResult));
             continue;
           }
           failed += 1;
@@ -4575,6 +4605,10 @@ async function handleSendBatch(req, res) {
         if (error?.code === "etsy_resource_not_found" || error?.code === "stale_listing_id" || error?.code === "shop_mismatch") {
           skipped += 1;
           const skippedReason = error?.code === "shop_mismatch" ? "shop_mismatch" : "not_live_listing";
+          const fallbackDiagnostics = verifyDiagnosticFields(error?.payload || {});
+          const catchDiagnostics = Object.keys(fallbackDiagnostics).length
+            ? fallbackDiagnostics
+            : backendLiveLookupDiagnostics(listingId, liveIds);
           console.warn(error?.code === "shop_mismatch" ? "[SEND BLOCKED SHOP_MISMATCH]" : "[SEND BLOCKED NONLIVE]", {
             listing_id: listingId,
             reason: skippedReason,
@@ -4589,18 +4623,20 @@ async function handleSendBatch(req, res) {
             selectedIds: requestedIds,
             body_keys: Object.keys(req.body || {})
           });
-          results.push(normalizeSendResult({
+          const catchResult = {
             listing_id: listingId,
             status: "skipped",
             reason: skippedReason,
             message: skippedReason === "shop_mismatch" ? "This listing does not belong to the connected Etsy shop." : "This listing is not currently active/live in your Etsy shop. Refresh Etsy Listings.",
             etsy_response: error?.payload || null,
-            ...verifyDiagnosticFields(error?.payload || {}),
+            ...catchDiagnostics,
             verify_endpoint_used: error?.payload?.verify_endpoint_used || "",
             verify_state: error?.payload?.verify_state || "",
             verify_shop_id: error?.payload?.verify_shop_id || "",
             verify_reason: error?.payload?.verify_reason || skippedReason
-          }));
+          };
+          console.log("[SEND RESULT VERIFY DIAGNOSTICS ATTACHED]", verifyDiagnosticFields(catchResult));
+          results.push(normalizeSendResult(catchResult));
           continue;
         }
         failed += 1;
