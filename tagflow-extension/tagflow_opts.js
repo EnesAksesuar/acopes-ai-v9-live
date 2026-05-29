@@ -121,8 +121,7 @@
       }
     }
 
-    // Billing card — force visible unconditionally after login
-    billingCardEl.style.display = 'block';
+    // Billing card — update plan badge and button visibility
     billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
     billingPlanBadgeEl.className   = 'plan-badge ' + plan;
     if (plan === 'free') {
@@ -147,7 +146,7 @@
     loginView.style.display    = 'block';
     loggedInView.style.display = 'none';
     cardTitle.textContent      = isSignup ? 'Ücretsiz Kayıt' : 'Giriş Yap';
-    if (billingCardEl) billingCardEl.style.display = 'none';
+    // billingCard is always in DOM — no hide needed
   }
 
   // ── API call helper (safe JSON parsing) ──────────────────────────────────
@@ -183,7 +182,6 @@
       const { ok, data } = await api('/api/tagflow/user/me', null, token);
       if (ok && data.success) {
         showLoggedIn(data);
-        billingCardEl.style.display = 'block';                   // force after call
       } else {
         // Token expired / invalid → clear and show login
         chrome.storage.local.remove('tagflowToken');
@@ -220,7 +218,6 @@
         chrome.storage.local.set({ tagflowToken: data.token }, function () {
           toast('✅ ' + (isSignup ? 'Hesap oluşturuldu!' : 'Giriş başarılı!'), 'ok');
           showLoggedIn(data);
-          billingCardEl.style.display = 'block';                 // force after call
         });
       } else {
         toast('❌ ' + (data.error || 'Bir hata oluştu.'), 'err');
