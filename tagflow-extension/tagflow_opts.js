@@ -121,9 +121,8 @@
       }
     }
 
-    // ── Billing card (separate card below account card) ──────────────────────
-    console.log('[BILLING CARD MOUNTED] plan=' + plan);
-    billingCardEl.style.display = 'block';                       // force visible
+    // Billing card — force visible unconditionally after login
+    billingCardEl.style.display = 'block';
     billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
     billingPlanBadgeEl.className   = 'plan-badge ' + plan;
     if (plan === 'free') {
