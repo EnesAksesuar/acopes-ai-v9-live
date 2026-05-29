@@ -77,10 +77,10 @@ function db() {
   }
   // ── Admin columns migration ──────────────────────────────────────────────
   const _adminCols = [
-    "ALTER TABLE tagflow_users ADD COLUMN role                   TEXT NOT NULL DEFAULT 'user'",
-    "ALTER TABLE tagflow_users ADD COLUMN daily_limit_override   INTEGER",
-    "ALTER TABLE tagflow_users ADD COLUMN account_status         TEXT NOT NULL DEFAULT 'active'",
-    "ALTER TABLE tagflow_users ADD COLUMN admin_note             TEXT",
+    "ALTER TABLE tagflow_users ADD COLUMN role                    TEXT DEFAULT 'user'",
+    "ALTER TABLE tagflow_users ADD COLUMN daily_limit_override    INTEGER",
+    "ALTER TABLE tagflow_users ADD COLUMN account_status          TEXT DEFAULT 'active'",
+    "ALTER TABLE tagflow_users ADD COLUMN admin_note              TEXT",
     "ALTER TABLE tagflow_users ADD COLUMN billing_subscription_id TEXT"
   ];
   for (const sql of _adminCols) {
@@ -88,11 +88,13 @@ function db() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
-  // ── Auto-assign owner role ────────────────────────────────────────────────
+  // ── Auto-assign owner role (always, unconditionally) ─────────────────────
   try {
-    _db.prepare("UPDATE tagflow_users SET role='owner' WHERE email=? AND role!='owner'")
-       .run(OWNER_EMAIL);
-  } catch {}
+    _db.prepare("UPDATE tagflow_users SET role='owner' WHERE email=?").run(OWNER_EMAIL);
+    console.log('[TAGFLOW DB] owner role enforced for', OWNER_EMAIL);
+  } catch (e) {
+    console.warn('[TAGFLOW DB] owner role assign failed:', e.message);
+  }
   console.log('[TAGFLOW DB] ready:', DB_PATH);
   return _db;
 }
@@ -258,7 +260,15 @@ router.get('/user/me', requireAuth, (req, res) => {
     let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
     if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
     user = freshUser(user);
-    res.json({ success: true, email: user.email, ...creditInfo(user) });
+    // Force owner role for owner email — safety net for any migration edge-case
+    if (user.email === OWNER_EMAIL && (user.role || 'user') !== 'owner') {
+      db().prepare("UPDATE tagflow_users SET role='owner' WHERE id=?").run(user.id);
+      user = { ...user, role: 'owner' };
+    }
+    const info = creditInfo(user);
+    console.log('[ME]', user.email, '| role=' + (user.role||'user'), '| plan=' + user.plan,
+                '| used=' + user.used_today + '/' + (info.daily_limit ?? '∞'));
+    res.json({ success: true, email: user.email, ...info });
   } catch (e) {
     console.error('[TAGFLOW ME ERROR]', e.message);
     res.status(500).json({ success: false, error: 'Sunucu hatası.' });

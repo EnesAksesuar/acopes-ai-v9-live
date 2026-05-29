@@ -213,6 +213,7 @@
     try {
       const { ok, data } = await api('/api/tagflow/user/me', null, token);
       if (ok && data.success) {
+        console.log('[ME DATA]', data);
         showLoggedIn(data);
       } else {
         // Token expired / invalid → clear and show login
