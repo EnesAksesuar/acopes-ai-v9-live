@@ -7,92 +7,162 @@
     <style>
       :root {
         color-scheme: dark;
-        --bg: #090b10;
-        --panel: rgba(255, 255, 255, 0.07);
-        --line: rgba(255, 255, 255, 0.12);
-        --text: #f7f1e8;
-        --muted: #a9a39b;
-        --green: #1D9E75;
+        --bg:     #090b10;
+        --panel:  rgba(255,255,255,0.06);
+        --line:   rgba(255,255,255,0.10);
+        --text:   #f7f1e8;
+        --muted:  #a9a39b;
+        --green:  #1D9E75;
+        --dkgrn:  #0F6E56;
+        --red:    #dc2626;
+        --gold:   #ca8a04;
+        --purple: #7c3aed;
       }
-      * { box-sizing: border-box; }
+      *  { box-sizing: border-box; margin: 0; padding: 0; }
       body {
-        margin: 0; min-height: 100vh;
-        background: radial-gradient(circle at top left, rgba(29, 158, 117, 0.15), transparent 34rem), var(--bg);
+        min-height: 100vh;
+        background: radial-gradient(circle at top left, rgba(29,158,117,.14), transparent 34rem), var(--bg);
         color: var(--text);
-        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+        font-size: 13px;
       }
-      main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0; }
-      h1 { margin: 0 0 6px; font-size: 28px; }
-      .sub { color: var(--muted); margin: 0 0 28px; font-size: 13px; }
-      .sub a { color: var(--green); }
-      /* Login form */
-      #loginSection { max-width: 360px; }
+      main { width: min(1200px, calc(100% - 32px)); margin: 0 auto; padding: 36px 0 60px; }
+
+      /* ── Header ─────────────────────────────────────────── */
+      .hdr { display: flex; align-items: baseline; gap: 14px; margin-bottom: 28px; flex-wrap: wrap; }
+      h1   { font-size: 24px; font-weight: 700; }
+      .hdr-sub { color: var(--muted); font-size: 12px; }
+      .hdr-sub a { color: var(--green); text-decoration: none; }
+
+      /* ── Login form ─────────────────────────────────────── */
+      #loginSection { max-width: 340px; }
       .field { margin-bottom: 12px; }
-      .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+      .field label { display: block; font-size: 11px; color: var(--muted); margin-bottom: 4px; text-transform: uppercase; letter-spacing: .05em; }
       .field input {
-        width: 100%; height: 42px; border-radius: 10px;
-        border: 1px solid var(--line); background: rgba(255,255,255,0.08);
-        color: var(--text); padding: 0 14px; font: inherit;
+        width: 100%; height: 40px; border-radius: 8px;
+        border: 1px solid var(--line); background: rgba(255,255,255,.07);
+        color: var(--text); padding: 0 12px; font: inherit;
+        transition: border-color .15s;
       }
+      .field input:focus { outline: none; border-color: var(--green); }
       .btn-login {
-        width: 100%; height: 42px; border-radius: 10px; border: none;
-        background: var(--green); color: #fff; font: 600 14px inherit; cursor: pointer;
+        width: 100%; height: 40px; border-radius: 8px; border: none;
+        background: var(--green); color: #fff; font: 600 13px inherit; cursor: pointer;
         transition: background .15s;
       }
-      .btn-login:hover:not(:disabled) { background: #0F6E56; }
-      .btn-login:disabled { background: #4b5563; cursor: not-allowed; }
-      /* Stats row */
-      .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+      .btn-login:hover:not(:disabled) { background: var(--dkgrn); }
+      .btn-login:disabled { background: #374151; cursor: not-allowed; }
+
+      /* ── Stats bar ──────────────────────────────────────── */
+      .stats { display: flex; gap: 10px; flex-wrap: wrap; margin-bottom: 20px; }
       .stat {
         background: var(--panel); border: 1px solid var(--line);
-        border-radius: 10px; padding: 14px 20px; min-width: 120px;
+        border-radius: 10px; padding: 12px 18px; min-width: 110px;
       }
-      .stat small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
-      .stat strong { font-size: 26px; }
-      /* Table */
-      .tbl-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--line); }
+      .stat small { display: block; color: var(--muted); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3px; }
+      .stat strong { font-size: 22px; font-weight: 700; }
+
+      /* ── Table ──────────────────────────────────────────── */
+      .tbl-wrap { overflow-x: auto; border-radius: 10px; border: 1px solid var(--line); }
       table { width: 100%; border-collapse: collapse; background: var(--panel); }
-      th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: middle; }
-      th { color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+      th, td { padding: 10px 12px; border-bottom: 1px solid var(--line); text-align: left; vertical-align: middle; white-space: nowrap; }
+      th { color: var(--green); font-size: 10px; text-transform: uppercase; letter-spacing: .07em; font-weight: 700; }
       tr:last-child td { border-bottom: none; }
+      tr.disabled-row td { opacity: .45; }
+
+      /* ── Plan badge ─────────────────────────────────────── */
       .badge {
-        display: inline-block; padding: 2px 8px; border-radius: 20px;
-        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+        display: inline-block; padding: 2px 7px; border-radius: 20px;
+        font-size: 10px; font-weight: 700; letter-spacing: .03em; text-transform: uppercase;
       }
-      .badge.free    { background: #374151; color: #9ca3af; }
-      .badge.premium { background: #451a03; color: #fbbf24; }
-      .badge.power   { background: #2e1065; color: #c4b5fd; }
-      /* Status lines */
-      .status { margin: 14px 0; font-size: 13px; min-height: 20px; color: var(--muted); }
+      .badge.free    { background: #1f2937; color: #9ca3af; }
+      .badge.premium { background: #422006; color: #fbbf24; }
+      .badge.power   { background: #1e1b4b; color: #a78bfa; }
+      .badge.active   { background: #052e16; color: #4ade80; }
+      .badge.disabled { background: #450a0a; color: #fca5a5; }
+
+      /* ── Action buttons ─────────────────────────────────── */
+      .actions { display: flex; gap: 4px; flex-wrap: wrap; align-items: center; }
+      .btn {
+        height: 24px; padding: 0 8px; border-radius: 5px; border: none;
+        font: 600 10px inherit; cursor: pointer; letter-spacing: .02em;
+        transition: filter .1s, opacity .1s;
+        white-space: nowrap;
+      }
+      .btn:hover:not(:disabled) { filter: brightness(1.2); }
+      .btn:disabled { opacity: .4; cursor: not-allowed; }
+      .btn:active:not(:disabled) { filter: brightness(.85); }
+
+      /* plan buttons */
+      .btn.p-free    { background: #374151; color: #d1d5db; }
+      .btn.p-premium { background: #713f12; color: #fde68a; }
+      .btn.p-power   { background: #3b0764; color: #d8b4fe; }
+
+      /* credit / limit */
+      .btn.credit  { background: #1e3a5f; color: #93c5fd; }
+      .btn.climit  { background: #1e3a5f; color: #93c5fd; }
+
+      /* reset */
+      .btn.reset   { background: #431407; color: #fb923c; }
+
+      /* enable / disable */
+      .btn.enable  { background: #052e16; color: #4ade80; }
+      .btn.disable { background: #450a0a; color: #fca5a5; }
+
+      /* divider between groups */
+      .sep { width: 1px; height: 18px; background: var(--line); margin: 0 2px; flex-shrink: 0; }
+
+      /* ── Limit display ──────────────────────────────────── */
+      .limit-val { font-weight: 700; }
+      .limit-override { color: #93c5fd; }
+
+      /* ── Toast ──────────────────────────────────────────── */
+      #toast {
+        position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+        padding: 10px 20px; border-radius: 10px; font-size: 13px; font-weight: 600;
+        pointer-events: none; opacity: 0; transition: opacity .2s;
+        z-index: 999; white-space: nowrap;
+      }
+      #toast.show { opacity: 1; }
+      #toast.ok   { background: #052e16; border: 1px solid #166534; color: #4ade80; }
+      #toast.err  { background: #450a0a; border: 1px solid #7f1d1d; color: #fca5a5; }
+
+      /* ── Status line ────────────────────────────────────── */
+      .status { margin: 12px 0; color: var(--muted); font-size: 12px; min-height: 18px; }
       .status.err { color: #f87171; }
+
+      /* ── Note cell ──────────────────────────────────────── */
+      .note-cell { max-width: 140px; overflow: hidden; text-overflow: ellipsis; color: var(--muted); }
+
+      @media (max-width: 700px) {
+        .stats { gap: 8px; }
+        th, td { padding: 8px; }
+      }
     </style>
   </head>
   <body>
     <main>
-      <h1>🏷️ TagFlow Admin</h1>
-      <p class="sub">Owner dashboard &middot; <a href="https://acopesai.com">acopesai.com</a></p>
+      <div class="hdr">
+        <h1>🏷️ TagFlow Admin</h1>
+        <span class="hdr-sub">Owner control panel &middot; <a href="https://acopesai.com">acopesai.com</a></span>
+      </div>
 
-      <!-- ── Login form (shown when no valid token) ── -->
+      <!-- ── Login (no token / expired) ── -->
       <div id="loginSection">
-        <div class="field">
-          <label>Email</label>
-          <input type="email" id="loginEmail" placeholder="ornek@email.com" autocomplete="email" />
-        </div>
-        <div class="field">
-          <label>Şifre</label>
-          <input type="password" id="loginPass" placeholder="Şifreniz" autocomplete="current-password" />
-        </div>
+        <div class="field"><label>Email</label><input type="email"    id="loginEmail" placeholder="ornek@email.com" autocomplete="email" /></div>
+        <div class="field"><label>Şifre</label><input type="password" id="loginPass"  placeholder="Şifreniz"        autocomplete="current-password" /></div>
         <button class="btn-login" id="loginBtn">Giriş Yap</button>
         <div class="status" id="loginStatus"></div>
       </div>
 
-      <!-- ── Dashboard (shown after successful auth) ── -->
+      <!-- ── Dashboard ── -->
       <div id="dashSection" style="display:none">
         <div class="stats">
-          <div class="stat"><small>Toplam Kullanıcı</small><strong id="statTotal">--</strong></div>
-          <div class="stat"><small>Free</small><strong id="statFree">--</strong></div>
-          <div class="stat"><small>Premium</small><strong id="statPremium">--</strong></div>
-          <div class="stat"><small>Power Seller</small><strong id="statPower">--</strong></div>
+          <div class="stat"><small>Toplam</small><strong id="sTotal">--</strong></div>
+          <div class="stat"><small>Free</small><strong id="sFree">--</strong></div>
+          <div class="stat"><small>Premium</small><strong id="sPremium">--</strong></div>
+          <div class="stat"><small>Power</small><strong id="sPower">--</strong></div>
+          <div class="stat"><small>Disabled</small><strong id="sDisabled">--</strong></div>
         </div>
         <div class="tbl-wrap">
           <table>
@@ -100,164 +170,313 @@
               <tr>
                 <th>Email</th>
                 <th>Plan</th>
-                <th>Bugün Kullanım</th>
-                <th>Abonelik Durumu</th>
-                <th>Yenileme Tarihi</th>
-                <th>Kayıt Tarihi</th>
+                <th>Limit</th>
+                <th>Bugün</th>
+                <th>Durum</th>
+                <th>Kayıt</th>
+                <th>Not</th>
+                <th>İşlemler</th>
               </tr>
             </thead>
-            <tbody id="usersBody">
-              <tr><td colspan="6">Yükleniyor...</td></tr>
-            </tbody>
+            <tbody id="usersBody"><tr><td colspan="8">Yükleniyor…</td></tr></tbody>
           </table>
         </div>
         <div class="status" id="dashStatus"></div>
       </div>
     </main>
 
+    <!-- global toast -->
+    <div id="toast"></div>
+
     <script>
-      'use strict';
-      const API = 'https://acopes-ai-production.up.railway.app/api/tagflow';
+    'use strict';
 
-      const loginSection = document.getElementById('loginSection');
-      const dashSection  = document.getElementById('dashSection');
-      const loginStatus  = document.getElementById('loginStatus');
-      const dashStatus   = document.getElementById('dashStatus');
-      const loginBtn     = document.getElementById('loginBtn');
-      const usersBody    = document.getElementById('usersBody');
+    const API        = 'https://acopes-ai-production.up.railway.app/api/tagflow';
+    const OWNER_MAIL = 'enesaksesuar1@gmail.com';
 
-      function esc(v) {
-        return String(v == null ? '' : v).replace(/[&<>"']/g, c =>
-          ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
+    let authToken = '';  // set after login / URL-token auth
+
+    // ── DOM refs ─────────────────────────────────────────────────────────────
+    const loginSection = document.getElementById('loginSection');
+    const dashSection  = document.getElementById('dashSection');
+    const loginStatus  = document.getElementById('loginStatus');
+    const dashStatus   = document.getElementById('dashStatus');
+    const loginBtn     = document.getElementById('loginBtn');
+    const usersBody    = document.getElementById('usersBody');
+
+    // ── Utilities ─────────────────────────────────────────────────────────────
+    function esc(v) {
+      return String(v == null ? '' : v)
+        .replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#039;'}[c]));
+    }
+    function fmtDate(iso) {
+      if (!iso) return '--';
+      try { return new Date(iso).toLocaleDateString('tr-TR', { day:'2-digit', month:'2-digit', year:'2-digit' }); }
+      catch { return iso; }
+    }
+
+    let _toastTimer;
+    function toast(msg, type) {
+      const el = document.getElementById('toast');
+      el.textContent = msg;
+      el.className   = 'show ' + (type || 'ok');
+      clearTimeout(_toastTimer);
+      _toastTimer = setTimeout(() => { el.className = type || 'ok'; }, 3000);
+    }
+
+    // ── API call ──────────────────────────────────────────────────────────────
+    async function api(method, path, body) {
+      const res  = await fetch(API + path, {
+        method,
+        headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + authToken }
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    // ── Load users from /admin/users ──────────────────────────────────────────
+    async function loadUsers(token) {
+      const res  = await fetch(API + '/admin/users', {
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+      const data = await res.json().catch(() => ({}));
+      return { ok: res.ok, status: res.status, data };
+    }
+
+    // ── Render dashboard ──────────────────────────────────────────────────────
+    function showDash(users) {
+      loginSection.style.display = 'none';
+      dashSection.style.display  = 'block';
+
+      document.getElementById('sTotal').textContent    = users.length;
+      document.getElementById('sFree').textContent     = users.filter(u => (u.plan||'free')==='free').length;
+      document.getElementById('sPremium').textContent  = users.filter(u => u.plan==='premium').length;
+      document.getElementById('sPower').textContent    = users.filter(u => u.plan==='power').length;
+      document.getElementById('sDisabled').textContent = users.filter(u => u.account_status==='disabled').length;
+
+      if (!users.length) {
+        usersBody.innerHTML = '<tr><td colspan="8" style="color:var(--muted)">Kayıtlı kullanıcı yok.</td></tr>';
+        return;
       }
 
-      function planBadge(plan) {
-        const p = (plan || 'free').toLowerCase();
-        return '<span class="badge ' + esc(p) + '">' + esc(p) + '</span>';
-      }
+      usersBody.innerHTML = users.map(u => {
+        const isOwner    = (u.email || '').toLowerCase() === OWNER_MAIL;
+        const disabled   = u.account_status === 'disabled';
+        const plan       = (u.plan || 'free').toLowerCase();
+        const hasOverride = u.daily_limit_override != null;
+        const limitStr   = hasOverride
+          ? `<span class="limit-val limit-override">${esc(u.effective_limit)}</span>`
+          : `<span class="limit-val">${esc(u.effective_limit)}</span>`;
 
-      function fmtDate(iso) {
-        if (!iso) return '--';
-        try { return new Date(iso).toLocaleDateString('tr-TR'); } catch { return String(iso); }
-      }
+        const disableBtn = isOwner
+          ? ''
+          : disabled
+            ? `<button class="btn enable"   data-id="${esc(u.id)}" data-action="enable">ENABLE</button>`
+            : `<button class="btn disable"  data-id="${esc(u.id)}" data-action="disable">DISABLE</button>`;
 
-      function showDash(users) {
-        loginSection.style.display = 'none';
-        dashSection.style.display  = 'block';
+        return `
+          <tr class="${disabled ? 'disabled-row' : ''}" data-id="${esc(u.id)}">
+            <td>${esc(u.email)}${isOwner ? ' 👑' : ''}</td>
+            <td><span class="badge ${esc(plan)}">${esc(plan)}</span></td>
+            <td>${limitStr}</td>
+            <td>${esc(u.used_today ?? 0)}</td>
+            <td><span class="badge ${disabled ? 'disabled' : 'active'}">${disabled ? 'disabled' : 'active'}</span></td>
+            <td>${fmtDate(u.created_at)}</td>
+            <td class="note-cell" title="${esc(u.admin_note)}">${esc(u.admin_note || '')}</td>
+            <td>
+              <div class="actions">
+                <button class="btn p-free"    data-id="${esc(u.id)}" data-action="plan" data-plan="free">FREE</button>
+                <button class="btn p-premium" data-id="${esc(u.id)}" data-action="plan" data-plan="premium">PREM</button>
+                <button class="btn p-power"   data-id="${esc(u.id)}" data-action="plan" data-plan="power">POWER</button>
+                <span class="sep"></span>
+                <button class="btn credit"    data-id="${esc(u.id)}" data-action="credit" data-amount="50">+50</button>
+                <button class="btn credit"    data-id="${esc(u.id)}" data-action="credit" data-amount="100">+100</button>
+                <button class="btn climit"    data-id="${esc(u.id)}" data-action="customlimit">LIMIT…</button>
+                <span class="sep"></span>
+                <button class="btn reset"     data-id="${esc(u.id)}" data-action="reset">RESET</button>
+                <span class="sep"></span>
+                ${disableBtn}
+              </div>
+            </td>
+          </tr>`;
+      }).join('');
+    }
 
-        document.getElementById('statTotal').textContent   = users.length;
-        document.getElementById('statFree').textContent    = users.filter(u => (u.plan || 'free') === 'free').length;
-        document.getElementById('statPremium').textContent = users.filter(u => u.plan === 'premium').length;
-        document.getElementById('statPower').textContent   = users.filter(u => u.plan === 'power').length;
+    // ── Refresh users silently ────────────────────────────────────────────────
+    async function refresh() {
+      const { ok, data } = await loadUsers(authToken);
+      if (ok && data.success) showDash(data.users || []);
+      dashStatus.textContent = 'Son güncelleme: ' + new Date().toLocaleTimeString('tr-TR');
+    }
 
-        if (!users.length) {
-          usersBody.innerHTML = '<tr><td colspan="6">Henüz kayıtlı kullanıcı yok.</td></tr>';
-        } else {
-          usersBody.innerHTML = users.map(u =>
-            '<tr>' +
-            '<td>' + esc(u.email) + '</td>' +
-            '<td>' + planBadge(u.plan) + '</td>' +
-            '<td>' + esc(u.used_today != null ? u.used_today : 0) + '</td>' +
-            '<td>' + esc(u.subscription_status || 'active') + '</td>' +
-            '<td>' + fmtDate(u.subscription_renewal) + '</td>' +
-            '<td>' + fmtDate(u.created_at) + '</td>' +
-            '</tr>'
-          ).join('');
+    // ── Action handler (event delegation on tbody) ────────────────────────────
+    usersBody.addEventListener('click', async (e) => {
+      const btn = e.target.closest('button[data-action]');
+      if (!btn) return;
+
+      const { id, action, plan, amount } = btn.dataset;
+      btn.disabled = true;
+
+      try {
+        let result;
+
+        if (action === 'plan') {
+          // ── Change plan ─────────────────────────────────────────────
+          result = await api('PATCH', `/admin/users/${id}/plan`, { plan });
+          if (result.ok) {
+            toast(`✅ Plan → ${plan.toUpperCase()}`, 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
+
+        } else if (action === 'credit') {
+          // ── Add credit (+50 / +100) ────────────────────────────────
+          const amt = parseInt(amount, 10);
+          result = await api('POST', `/admin/users/${id}/add-credit`, { amount: amt });
+          if (result.ok) {
+            toast(`✅ +${amt} kredi eklendi`, 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
+
+        } else if (action === 'customlimit') {
+          // ── Custom limit via prompt ────────────────────────────────
+          const raw = prompt('Yeni günlük limit girin (tam sayı):');
+          if (raw === null) { btn.disabled = false; return; }
+          const val = parseInt(raw, 10);
+          if (isNaN(val) || val < 0) { toast('❌ Geçersiz değer.', 'err'); btn.disabled = false; return; }
+          result = await api('PATCH', `/admin/users/${id}`, { daily_limit_override: val });
+          if (result.ok) {
+            toast(`✅ Limit → ${val}`, 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
+
+        } else if (action === 'reset') {
+          // ── Reset today's usage ────────────────────────────────────
+          result = await api('POST', `/admin/users/${id}/reset-usage`, {});
+          if (result.ok) {
+            toast('✅ Kullanım sıfırlandı', 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
+
+        } else if (action === 'disable') {
+          // ── Disable account (confirm first) ───────────────────────
+          if (!confirm('Bu kullanıcıyı devre dışı bırakmak istediğinize emin misiniz?')) {
+            btn.disabled = false; return;
+          }
+          result = await api('PATCH', `/admin/users/${id}/status`, { account_status: 'disabled' });
+          if (result.ok) {
+            toast('✅ Kullanıcı devre dışı bırakıldı', 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
+
+        } else if (action === 'enable') {
+          // ── Enable account ─────────────────────────────────────────
+          result = await api('PATCH', `/admin/users/${id}/status`, { account_status: 'active' });
+          if (result.ok) {
+            toast('✅ Kullanıcı aktif edildi', 'ok');
+            await refresh();
+          } else {
+            toast('❌ ' + (result.data.error || 'Hata'), 'err');
+          }
         }
 
-        dashStatus.textContent = users.length + ' kullanıcı yüklendi · ' + new Date().toLocaleTimeString('tr-TR');
+      } catch (err) {
+        toast('❌ Bağlantı hatası: ' + err.message, 'err');
       }
 
-      async function loadUsers(token) {
-        const res  = await fetch(API + '/admin/users', {
-          headers: { 'Authorization': 'Bearer ' + token }
-        });
-        const data = await res.json().catch(() => ({}));
-        return { ok: res.ok, status: res.status, data };
-      }
+      btn.disabled = false;
+    });
 
-      // ── Auto-auth from ?token= URL param ─────────────────────────────────────
-      (async function init() {
-        const urlToken = new URLSearchParams(location.search).get('token');
-        if (!urlToken) return; // no token → show login form
-        loginStatus.textContent = 'Oturum doğrulanıyor...';
-        loginStatus.className = 'status';
+    // ── Auto-auth from ?token= URL param ─────────────────────────────────────
+    (async function init() {
+      const urlToken = new URLSearchParams(location.search).get('token');
+      if (urlToken) {
+        loginStatus.textContent = 'Doğrulanıyor…';
         try {
           const { ok, status, data } = await loadUsers(urlToken);
           if (ok && data.success) {
+            authToken = urlToken;
             showDash(data.users || []);
+            dashStatus.textContent = data.users.length + ' kullanıcı yüklendi · ' + new Date().toLocaleTimeString('tr-TR');
             return;
           }
-          // Invalid or unauthorised — strip token from URL, show login
           history.replaceState({}, '', location.pathname);
-          if (status === 403) {
-            loginStatus.textContent = 'Bu hesabın admin yetkisi yok.';
-          } else {
-            loginStatus.textContent = 'Oturum süresi dolmuş. Lütfen tekrar giriş yapın.';
-          }
+          loginStatus.textContent = status === 403
+            ? 'Admin yetkisi yok.'
+            : 'Oturum süresi dolmuş — tekrar giriş yapın.';
           loginStatus.className = 'status err';
-        } catch (e) {
+        } catch (err) {
           history.replaceState({}, '', location.pathname);
-          loginStatus.textContent = 'Bağlantı hatası: ' + e.message;
+          loginStatus.textContent = 'Bağlantı hatası: ' + err.message;
           loginStatus.className = 'status err';
         }
-      })();
+      }
+    })();
 
-      // ── Fallback email / password login ──────────────────────────────────────
-      async function doLogin() {
-        const email    = (document.getElementById('loginEmail').value || '').trim();
-        const password = (document.getElementById('loginPass').value  || '').trim();
-        if (!email || !password) {
-          loginStatus.textContent = 'Email ve şifre gerekli.';
+    // ── Fallback login ────────────────────────────────────────────────────────
+    async function doLogin() {
+      const email    = (document.getElementById('loginEmail').value || '').trim();
+      const password = (document.getElementById('loginPass').value  || '').trim();
+      if (!email || !password) {
+        loginStatus.textContent = 'Email ve şifre gerekli.';
+        loginStatus.className = 'status err';
+        return;
+      }
+      loginBtn.disabled    = true;
+      loginBtn.textContent = 'Bekleniyor…';
+      loginStatus.textContent = '';
+      loginStatus.className = 'status';
+
+      try {
+        const r    = await fetch(API + '/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ email, password })
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok || !d.success) {
+          loginStatus.textContent = d.error || 'Giriş başarısız.';
           loginStatus.className = 'status err';
+          loginBtn.disabled = false;
+          loginBtn.textContent = 'Giriş Yap';
           return;
         }
 
-        loginBtn.disabled    = true;
-        loginBtn.textContent = 'Bekleniyor...';
-        loginStatus.textContent = '';
-        loginStatus.className = 'status';
-
-        try {
-          const loginRes  = await fetch(API + '/auth/login', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ email, password })
-          });
-          const loginData = await loginRes.json().catch(() => ({}));
-
-          if (!loginRes.ok || !loginData.success) {
-            loginStatus.textContent = loginData.error || 'Giriş başarısız.';
-            loginStatus.className = 'status err';
-            loginBtn.disabled = false;
-            loginBtn.textContent = 'Giriş Yap';
-            return;
-          }
-
-          const { ok, status, data } = await loadUsers(loginData.token);
-          if (ok && data.success) {
-            showDash(data.users || []);
-          } else {
-            loginStatus.textContent = status === 403
-              ? 'Bu hesabın admin yetkisi yok.'
-              : (data.error || 'Admin erişimi başarısız.');
-            loginStatus.className = 'status err';
-            loginBtn.disabled = false;
-            loginBtn.textContent = 'Giriş Yap';
-          }
-        } catch (e) {
-          loginStatus.textContent = 'Bağlantı hatası: ' + e.message;
+        const { ok, status, data } = await loadUsers(d.token);
+        if (ok && data.success) {
+          authToken = d.token;
+          showDash(data.users || []);
+          dashStatus.textContent = data.users.length + ' kullanıcı yüklendi · ' + new Date().toLocaleTimeString('tr-TR');
+        } else {
+          loginStatus.textContent = status === 403
+            ? 'Bu hesabın admin yetkisi yok.'
+            : (data.error || 'Admin erişimi başarısız.');
           loginStatus.className = 'status err';
           loginBtn.disabled = false;
           loginBtn.textContent = 'Giriş Yap';
         }
+      } catch (err) {
+        loginStatus.textContent = 'Bağlantı hatası: ' + err.message;
+        loginStatus.className = 'status err';
+        loginBtn.disabled = false;
+        loginBtn.textContent = 'Giriş Yap';
       }
+    }
 
-      loginBtn.addEventListener('click', doLogin);
-      ['loginEmail', 'loginPass'].forEach(function(id) {
-        var el = document.getElementById(id);
-        if (el) el.addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
-      });
+    loginBtn.addEventListener('click', doLogin);
+    ['loginEmail','loginPass'].forEach(function(id) {
+      var el = document.getElementById(id);
+      if (el) el.addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
+    });
     </script>
   </body>
 </html>

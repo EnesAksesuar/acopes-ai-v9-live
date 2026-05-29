@@ -73,6 +73,17 @@ function db() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
+  // ── Admin columns migration ───────────────────────────────────────────────
+  const _adminCols = [
+    'ALTER TABLE tagflow_users ADD COLUMN daily_limit_override INTEGER',
+    "ALTER TABLE tagflow_users ADD COLUMN account_status       TEXT NOT NULL DEFAULT 'active'",
+    'ALTER TABLE tagflow_users ADD COLUMN admin_note           TEXT'
+  ];
+  for (const sql of _adminCols) {
+    try { _db.exec(sql); } catch (e) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
   console.log('[TAGFLOW DB] ready:', DB_PATH);
   return _db;
 }
@@ -132,19 +143,26 @@ function freshUser(user) {
   }
   return user;
 }
+// Effective daily limit — admin override takes priority over plan default
+function effectiveLimit(user) {
+  if (user.daily_limit_override != null) return user.daily_limit_override;
+  return PLAN_LIMITS[user.plan] ?? 15;
+}
 function creditInfo(user) {
-  const limit = PLAN_LIMITS[user.plan] ?? 15;
-  const meta  = PLAN_META[user.plan]   || PLAN_META.free;
+  const limit = effectiveLimit(user);
+  const meta  = PLAN_META[user.plan] || PLAN_META.free;
   return {
-    plan:                 user.plan,
-    plan_name:            meta.name,
-    plan_price:           meta.price,
-    daily_limit:          limit,
-    used_today:           user.used_today,
-    remaining:            Math.max(0, limit - (user.used_today || 0)),
-    subscription_status:  user.subscription_status  || null,
-    subscription_renewal: user.subscription_renewal || null,
-    billing_provider:     user.billing_provider     || null
+    plan:                  user.plan,
+    plan_name:             meta.name,
+    plan_price:            meta.price,
+    daily_limit:           limit,
+    daily_limit_override:  user.daily_limit_override ?? null,
+    account_status:        user.account_status || 'active',
+    used_today:            user.used_today,
+    remaining:             Math.max(0, limit - (user.used_today || 0)),
+    subscription_status:   user.subscription_status  || null,
+    subscription_renewal:  user.subscription_renewal || null,
+    billing_provider:      user.billing_provider     || null
   };
 }
 
@@ -518,14 +536,144 @@ router.post('/billing/webhook', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/admin/users', requireAdmin, (req, res) => {
   try {
-    const users = db().prepare(
+    const rows = db().prepare(
       `SELECT id, email, plan, used_today, last_reset, created_at,
-              subscription_status, subscription_renewal
+              subscription_status, subscription_renewal,
+              daily_limit_override, account_status, admin_note
        FROM tagflow_users ORDER BY created_at DESC`
     ).all();
+    // Attach effective limit so frontend doesn't need to compute it
+    const users = rows.map(u => ({ ...u, effective_limit: effectiveLimit(u) }));
     res.json({ success: true, count: users.length, users });
   } catch (e) {
     console.error('[TAGFLOW ADMIN USERS]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/tagflow/admin/users/:id
+// Body: { plan?, daily_limit_override?, account_status?, admin_note? }
+// ─────────────────────────────────────────────────────────────────────────────
+router.patch('/admin/users/:id', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const { plan, daily_limit_override, account_status, admin_note } = req.body || {};
+
+  if (plan !== undefined && !['free', 'premium', 'power'].includes(plan))
+    return res.status(400).json({ success: false, error: 'Geçersiz plan.' });
+  if (account_status !== undefined && !['active', 'disabled'].includes(account_status))
+    return res.status(400).json({ success: false, error: "account_status 'active' veya 'disabled' olmalı." });
+
+  try {
+    const user = db().prepare('SELECT email FROM tagflow_users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    if (user.email.toLowerCase() === OWNER_EMAIL && account_status === 'disabled')
+      return res.status(403).json({ success: false, error: 'Owner hesabı devre dışı bırakılamaz.' });
+
+    const sets = [], vals = [];
+    if (plan                !== undefined) { sets.push('plan=?');                 vals.push(plan); }
+    if (daily_limit_override !== undefined) { sets.push('daily_limit_override=?'); vals.push(daily_limit_override); }
+    if (account_status      !== undefined) { sets.push('account_status=?');       vals.push(account_status); }
+    if (admin_note          !== undefined) { sets.push('admin_note=?');           vals.push(admin_note); }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'Güncellenecek alan yok.' });
+
+    vals.push(id);
+    db().prepare(`UPDATE tagflow_users SET ${sets.join(',')} WHERE id=?`).run(...vals);
+    console.log(`[ADMIN PATCH] id=${id}`, sets.join(','));
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[ADMIN PATCH ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/tagflow/admin/users/:id/add-credit
+// Body: { amount: number }
+// Logic: override = (override ?? planDefault) + amount
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/admin/users/:id/add-credit', requireAdmin, (req, res) => {
+  const { id }     = req.params;
+  const { amount } = req.body || {};
+  if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0)
+    return res.status(400).json({ success: false, error: 'amount pozitif tam sayı olmalı.' });
+
+  try {
+    const user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+
+    const base     = user.daily_limit_override ?? (PLAN_LIMITS[user.plan] ?? 15);
+    const newLimit = base + amount;
+    db().prepare('UPDATE tagflow_users SET daily_limit_override=? WHERE id=?').run(newLimit, id);
+    console.log(`[ADMIN ADD-CREDIT] id=${id} +${amount} → ${newLimit}`);
+    res.json({ success: true, daily_limit_override: newLimit });
+  } catch (e) {
+    console.error('[ADMIN ADD-CREDIT ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// POST /api/tagflow/admin/users/:id/reset-usage
+// Sets used_today = 0 for today
+// ─────────────────────────────────────────────────────────────────────────────
+router.post('/admin/users/:id/reset-usage', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  try {
+    const user = db().prepare('SELECT id FROM tagflow_users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    db().prepare('UPDATE tagflow_users SET used_today=0, last_reset=? WHERE id=?').run(today(), id);
+    console.log(`[ADMIN RESET-USAGE] id=${id}`);
+    res.json({ success: true });
+  } catch (e) {
+    console.error('[ADMIN RESET-USAGE ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/tagflow/admin/users/:id/plan
+// Body: { plan: 'free'|'premium'|'power' }
+// ─────────────────────────────────────────────────────────────────────────────
+router.patch('/admin/users/:id/plan', requireAdmin, (req, res) => {
+  const { id }   = req.params;
+  const { plan } = req.body || {};
+  if (!['free', 'premium', 'power'].includes(plan))
+    return res.status(400).json({ success: false, error: "Plan 'free', 'premium' veya 'power' olmalı." });
+
+  try {
+    const user = db().prepare('SELECT id FROM tagflow_users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    db().prepare('UPDATE tagflow_users SET plan=? WHERE id=?').run(plan, id);
+    console.log(`[ADMIN SET-PLAN] id=${id} → ${plan}`);
+    res.json({ success: true, plan });
+  } catch (e) {
+    console.error('[ADMIN SET-PLAN ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// PATCH /api/tagflow/admin/users/:id/status
+// Body: { account_status: 'active'|'disabled' }
+// Owner account cannot be disabled.
+// ─────────────────────────────────────────────────────────────────────────────
+router.patch('/admin/users/:id/status', requireAdmin, (req, res) => {
+  const { id }             = req.params;
+  const { account_status } = req.body || {};
+  if (!['active', 'disabled'].includes(account_status))
+    return res.status(400).json({ success: false, error: "account_status 'active' veya 'disabled' olmalı." });
+
+  try {
+    const user = db().prepare('SELECT email FROM tagflow_users WHERE id=?').get(id);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    if (user.email.toLowerCase() === OWNER_EMAIL && account_status === 'disabled')
+      return res.status(403).json({ success: false, error: 'Owner hesabı devre dışı bırakılamaz.' });
+    db().prepare('UPDATE tagflow_users SET account_status=? WHERE id=?').run(account_status, id);
+    console.log(`[ADMIN SET-STATUS] id=${id} → ${account_status}`);
+    res.json({ success: true, account_status });
+  } catch (e) {
+    console.error('[ADMIN SET-STATUS ERROR]', e.message);
     res.status(500).json({ success: false, error: 'Sunucu hatası.' });
   }
 });
