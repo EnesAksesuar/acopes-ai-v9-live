@@ -27,6 +27,7 @@
   const btnUpgradePremium= document.getElementById('btnUpgradePremium');
   const btnUpgradePower  = document.getElementById('btnUpgradePower');
   const bestPlanEl       = document.getElementById('bestPlan');
+  const adminDashBtnEl   = document.getElementById('adminDashBtn');
 
   // ── State ─────────────────────────────────────────────────────────────────
   let isSignup = false;
@@ -43,24 +44,52 @@
   }
 
   // ── Plan display names ────────────────────────────────────────────────────
-  const PLAN_NAMES = { free: 'FREE', premium: 'PREMIUM', power: 'POWER SELLER' };
+  const PLAN_NAMES = { free: 'FREE', premium: 'PREMIUM', power: 'POWER SELLER', owner: 'OWNER' };
 
   // ── Show logged-in UI ─────────────────────────────────────────────────────
   function showLoggedIn(data) {
     loginView.style.display    = 'none';
     loggedInView.style.display = 'block';
     cardTitle.textContent      = 'Hesabınız';
+    userEmailEl.textContent    = data.email || '';
 
-    // ── User + plan badge ───────────────────────────────────────────────────
-    userEmailEl.textContent = data.email || '';
+    const isOwner = data.role === 'owner' || data.unlimited === true;
+
+    // ── Owner branch ────────────────────────────────────────────────────────
+    if (isOwner) {
+      // Badge
+      planBadgeEl.textContent = 'OWNER';
+      planBadgeEl.className   = 'plan-badge owner';
+
+      // Credit bar — full bar, ∞ Unlimited label
+      creditBarEl.className   = 'credit-bar-fill owner';
+      creditBarEl.style.width = '100%';
+      usedNumEl.textContent   = '∞';
+      limitNumEl.textContent  = 'Unlimited';
+
+      // Hide everything a non-owner would see
+      if (upgradeCtaEl)    upgradeCtaEl.style.display    = 'none';
+      if (renewalRowEl)    renewalRowEl.style.display    = 'none';
+      if (upgradeSectionEl) upgradeSectionEl.style.display = 'none';
+      if (bestPlanEl)      bestPlanEl.style.display      = 'none';
+
+      // Show admin dashboard button
+      if (adminDashBtnEl)  adminDashBtnEl.style.display  = 'block';
+      return;
+    }
+
+    // ── Normal user branch ──────────────────────────────────────────────────
+    if (adminDashBtnEl) adminDashBtnEl.style.display = 'none';
+
     const plan = (data.plan || 'free').toLowerCase();
     planBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
     planBadgeEl.className   = 'plan-badge ' + plan;
 
-    // ── Credit bar ──────────────────────────────────────────────────────────
+    // Credit bar
     const used  = data.used_today  || 0;
     const limit = data.daily_limit || 15;
     const pct   = Math.min(100, Math.round((used / limit) * 100));
+    creditBarEl.className   = 'credit-bar-fill';
     creditBarEl.style.width = pct + '%';
     usedNumEl.textContent   = used;
     limitNumEl.textContent  = limit.toLocaleString();
@@ -70,10 +99,10 @@
     if (upgradeCtaEl) {
       const showWarn = plan === 'free' && remaining <= 3;
       upgradeCtaEl.style.display = showWarn ? 'flex' : 'none';
-      if (upgradeCtaLink) upgradeCtaLink.href = `https://tagflow.acopesai.com/upgrade?plan=premium`;
+      if (upgradeCtaLink) upgradeCtaLink.href = 'https://tagflow.acopesai.com/upgrade?plan=premium';
     }
 
-    // ── Renewal date (paid plans) ───────────────────────────────────────────
+    // Renewal date (paid plans)
     if (renewalRowEl && renewalDateEl) {
       if (data.subscription_renewal && plan !== 'free') {
         renewalDateEl.textContent = new Date(data.subscription_renewal).toLocaleDateString('tr-TR');
@@ -83,10 +112,10 @@
       }
     }
 
-    // ── Upgrade buttons ─────────────────────────────────────────────────────
+    // Upgrade buttons
     if (upgradeSectionEl && btnUpgradePremium && btnUpgradePower && bestPlanEl) {
       if (plan === 'free') {
-        upgradeSectionEl.style.display = 'flex';
+        upgradeSectionEl.style.display  = 'flex';
         btnUpgradePremium.style.display = '';
         btnUpgradePower.style.display   = '';
         bestPlanEl.style.display        = 'none';
@@ -96,7 +125,6 @@
         btnUpgradePower.style.display   = '';
         bestPlanEl.style.display        = 'none';
       } else {
-        // power — best plan
         upgradeSectionEl.style.display = 'none';
         bestPlanEl.style.display       = 'block';
       }
@@ -227,6 +255,13 @@
 
   if (btnUpgradePremium) btnUpgradePremium.addEventListener('click', () => handleUpgrade('premium'));
   if (btnUpgradePower)   btnUpgradePower.addEventListener('click',   () => handleUpgrade('power'));
+
+  // ── Admin dashboard shortcut (owner only) ────────────────────────────────
+  if (adminDashBtnEl) {
+    adminDashBtnEl.addEventListener('click', () => {
+      window.open('https://acopesai.com/admin.html', '_blank');
+    });
+  }
 
   // ── Enter key support ─────────────────────────────────────────────────────
   [emailEl, passwordEl].forEach(el => {

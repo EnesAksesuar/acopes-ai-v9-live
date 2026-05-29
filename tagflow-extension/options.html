@@ -58,6 +58,13 @@
     .step{flex:1;padding:10px;background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;text-align:center}
     .step-n{font-size:18px;font-weight:700;color:#0F6E56}
     .step-l{font-size:10px;color:#9ca3af;margin-top:2px;line-height:1.4}
+    /* ── Owner badge ── */
+    .plan-badge.owner{background:#fef2f2;color:#991b1b;border:1px solid #fecaca;font-weight:700}
+    /* ── Admin dashboard button ── */
+    .btn-admin{display:none;width:100%;padding:9px 12px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;border-radius:9px;font:600 12px inherit;cursor:pointer;margin-bottom:8px;transition:background .15s;text-align:center}
+    .btn-admin:hover{background:#fed7aa}
+    /* ── Owner unlimited bar ── */
+    .credit-bar-fill.owner{background:#991b1b}
   </style>
 </head>
 <body>
@@ -102,6 +109,9 @@
         <div class="credit-bar-bg"><div class="credit-bar-fill" id="creditBar" style="width:0%"></div></div>
         <div class="credit-nums"><span class="used" id="usedNum">0</span> / <span id="limitNum">15</span> analiz kullanıldı</div>
       </div>
+
+      <!-- Admin dashboard shortcut (owner only) -->
+      <button class="btn-admin" id="adminDashBtn">🛠️ Admin Dashboard</button>
 
       <!-- Low-credit warning (free plan only) -->
       <div class="upgrade-cta" id="upgradeCta" style="display:none">
