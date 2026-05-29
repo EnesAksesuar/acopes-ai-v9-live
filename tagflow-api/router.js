@@ -19,6 +19,7 @@ const router    = Router();
 const TAGFLOW_JWT_SECRET = (process.env.TAGFLOW_JWT_SECRET || 'tagflow-dev-secret-CHANGE-IN-PROD').trim();
 const ANTHROPIC_KEY      = (process.env.ANTHROPIC_API_KEY  || '').trim();
 const DB_PATH            = path.join(process.env.ACOPES_DATA_DIR || '/tmp', 'acopes-ai', 'tagflow.db');
+const OWNER_EMAIL        = 'enesaksesuar1@gmail.com';
 
 // ── Plan limits (analyses / day) ─────────────────────────────────────────────
 const PLAN_LIMITS = { free: 15, premium: 250, power: 9999 };
@@ -106,6 +107,22 @@ function requireAuth(req, res, next) {
   }
 }
 
+// ── Admin middleware (owner email = always allowed; others → 403) ─────────────
+function requireAdmin(req, res, next) {
+  const tok = (req.headers.authorization || '').replace(/^Bearer /, '').trim();
+  if (!tok) return res.status(401).json({ success: false, error: 'Token gerekli.' });
+  try {
+    req.tf = verifyTok(tok);
+  } catch {
+    return res.status(401).json({ success: false, error: 'Geçersiz token.' });
+  }
+  if (String(req.tf.email || '').toLowerCase() === OWNER_EMAIL) {
+    req.tf.role = 'owner';
+    return next();
+  }
+  return res.status(403).json({ success: false, error: 'Bu işlem için yetkiniz yok.' });
+}
+
 // ── Credit helpers ────────────────────────────────────────────────────────────
 function today() { return new Date().toISOString().slice(0, 10); }
 function freshUser(user) {
@@ -139,7 +156,7 @@ router.get('/probe', (_req, res) => {
 // ── CORS (Chrome extension → backend) ────────────────────────────────────────
 router.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
@@ -493,6 +510,23 @@ router.post('/billing/webhook', async (req, res) => {
   } catch (e) {
     console.error('[BILLING WEBHOOK ERROR]', e.message);
     res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// GET /api/tagflow/admin/users
+// ─────────────────────────────────────────────────────────────────────────────
+router.get('/admin/users', requireAdmin, (req, res) => {
+  try {
+    const users = db().prepare(
+      `SELECT id, email, plan, used_today, last_reset, created_at,
+              subscription_status, subscription_renewal
+       FROM tagflow_users ORDER BY created_at DESC`
+    ).all();
+    res.json({ success: true, count: users.length, users });
+  } catch (e) {
+    console.error('[TAGFLOW ADMIN USERS]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
   }
 });
 

@@ -258,8 +258,12 @@
 
   // ── Admin dashboard shortcut (owner only) ────────────────────────────────
   if (adminDashBtnEl) {
-    adminDashBtnEl.addEventListener('click', () => {
-      window.open('https://acopesai.com/admin.html', '_blank');
+    adminDashBtnEl.addEventListener('click', async () => {
+      const s = await chrome.storage.local.get('tagflowToken');
+      const token = s.tagflowToken || '';
+      const url = 'https://acopesai.com/admin.html' +
+                  (token ? '?token=' + encodeURIComponent(token) : '');
+      window.open(url, '_blank');
     });
   }
 
