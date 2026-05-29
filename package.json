@@ -5,7 +5,8 @@
   "type": "module",
   "engines": { "node": "22" },
   "scripts": {
-    "dev": "node server.js"
+    "dev": "node server.js",
+    "build": "echo built"
   },
   "dependencies": {
     "cookie-session": "^2.1.1",

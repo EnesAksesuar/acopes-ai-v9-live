@@ -1,7 +1,11 @@
 {
   "version": 2,
   "builds": [
-    { "src": "public/**", "use": "@vercel/static" },
+    {
+      "src": "package.json",
+      "use": "@vercel/static-build",
+      "config": { "distDir": "public" }
+    },
     {
       "src": "server.js",
       "use": "@vercel/node",
@@ -9,17 +13,12 @@
     }
   ],
   "routes": [
-    { "src": "/",              "dest": "/public/index.html" },
-    { "src": "/pricing",       "dest": "/public/pricing.html" },
-    { "src": "/terms",         "dest": "/public/terms.html" },
-    { "src": "/privacy",       "dest": "/public/privacy.html" },
-    { "src": "/refund-policy", "dest": "/public/refund-policy.html" },
-    { "src": "/app\\.html",    "dest": "/public/app.html" },
-    { "src": "/admin\\.html",  "dest": "/public/admin.html" },
-    {
-      "src": "/([\\w.-]+\\.(?:css|js|ico|png|svg|jpg|jpeg|webp|woff2?))",
-      "dest": "/public/$1"
-    },
+    { "src": "/",              "dest": "/index.html" },
+    { "src": "/pricing",       "dest": "/pricing.html" },
+    { "src": "/terms",         "dest": "/terms.html" },
+    { "src": "/privacy",       "dest": "/privacy.html" },
+    { "src": "/refund-policy", "dest": "/refund-policy.html" },
+    { "handle": "filesystem" },
     { "src": "/(.*)",          "dest": "server.js" }
   ]
 }
