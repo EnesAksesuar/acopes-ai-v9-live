@@ -593,10 +593,10 @@ router.patch('/admin/users/:id', requireAdmin, (req, res) => {
 // Logic: override = (override ?? planDefault) + amount
 // ─────────────────────────────────────────────────────────────────────────────
 router.post('/admin/users/:id/add-credit', requireAdmin, (req, res) => {
-  const { id }     = req.params;
-  const { amount } = req.body || {};
-  if (typeof amount !== 'number' || !Number.isInteger(amount) || amount <= 0)
-    return res.status(400).json({ success: false, error: 'amount pozitif tam sayı olmalı.' });
+  const { id } = req.params;
+  const amount  = Number((req.body || {}).amount);   // accepts 50 or "50"
+  if (!Number.isFinite(amount) || amount <= 0)
+    return res.status(400).json({ success: false, error: 'amount pozitif sayı olmalı.', received: (req.body || {}).amount });
 
   try {
     const user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(id);
