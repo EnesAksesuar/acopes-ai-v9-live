@@ -5,6 +5,11 @@
       "src": "package.json",
       "use": "@vercel/static-build",
       "config": { "distDir": "public" }
+    },
+    {
+      "src": "server.js",
+      "use": "@vercel/node",
+      "config": { "maxDuration": 30 }
     }
   ],
   "routes": [
@@ -12,7 +17,9 @@
     { "src": "/pricing",       "dest": "/pricing.html" },
     { "src": "/terms",         "dest": "/terms.html" },
     { "src": "/privacy",       "dest": "/privacy.html" },
+    { "src": "/refund",        "dest": "/refund.html" },
     { "src": "/refund-policy", "dest": "/refund-policy.html" },
-    { "handle": "filesystem" }
+    { "handle": "filesystem" },
+    { "src": "/(.*)",          "dest": "server.js" }
   ]
 }
