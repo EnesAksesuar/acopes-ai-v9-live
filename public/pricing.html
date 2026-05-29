@@ -1,0 +1,116 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Pricing | TagFlow by ACOPES AI</title>
+  <style>
+    *{box-sizing:border-box;margin:0;padding:0}
+    :root{--green:#0F6E56;--green-mid:#1D9E75;--green-light:#E1F5EE}
+    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f9fafb;color:#111827;min-height:100vh}
+    nav{background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 24px;display:flex;align-items:center;gap:12px}
+    .nav-ico{width:34px;height:34px;background:var(--green);border-radius:9px;display:flex;align-items:center;justify-content:center;font-size:17px}
+    .nav-title{font-weight:700;font-size:15px}
+    .back{margin-left:auto;font-size:12px;color:var(--green-mid);text-decoration:none;font-weight:600}
+    .hero{text-align:center;padding:56px 20px 16px}
+    .hero h1{font-size:clamp(26px,5vw,42px);font-weight:800;margin-bottom:12px}
+    .hero p{font-size:15px;color:#6b7280;max-width:480px;margin:0 auto}
+    .plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:20px;max-width:760px;margin:40px auto 60px;padding:0 20px}
+    .plan{background:#fff;border:1px solid #e5e7eb;border-radius:16px;padding:28px;text-align:center;box-shadow:0 1px 4px rgba(0,0,0,.04)}
+    .plan.featured{border-color:var(--green-mid);box-shadow:0 0 0 3px var(--green-light)}
+    .plan-badge{display:inline-block;font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.07em;padding:3px 10px;border-radius:20px;margin-bottom:14px}
+    .badge-free{background:#f3f4f6;color:#6b7280}
+    .badge-premium{background:#fef9c3;color:#854d0e}
+    .badge-power{background:#ede9fe;color:#5b21b6}
+    .plan-price{font-size:36px;font-weight:800;color:#111827;line-height:1}
+    .plan-price sup{font-size:20px;vertical-align:top;margin-top:6px;display:inline-block}
+    .plan-period{font-size:13px;color:#9ca3af;font-weight:400;margin-left:2px}
+    .plan-limit{font-size:13px;color:#6b7280;margin:10px 0 20px}
+    .plan-limit strong{color:#374151;font-weight:700}
+    .plan-features{list-style:none;text-align:left;margin-bottom:24px;font-size:13px;color:#374151;display:flex;flex-direction:column;gap:8px}
+    .plan-features li::before{content:"✓ ";color:var(--green-mid);font-weight:700}
+    .plan-cta{display:block;width:100%;padding:12px;border:none;border-radius:10px;font:700 13px inherit;cursor:pointer;text-decoration:none;transition:all .15s}
+    .cta-primary{background:var(--green-mid);color:#fff}
+    .cta-primary:hover{background:var(--green)}
+    .cta-outline{background:transparent;color:var(--green-mid);border:1.5px solid var(--green-mid)}
+    .cta-outline:hover{background:var(--green-light)}
+    .note{text-align:center;font-size:12px;color:#9ca3af;padding:0 20px 48px}
+    .note a{color:var(--green-mid)}
+    footer{border-top:1px solid #f3f4f6;text-align:center;padding:24px 20px;font-size:12px;color:#9ca3af}
+    footer a{color:var(--green-mid);text-decoration:none}
+  </style>
+</head>
+<body>
+
+<nav>
+  <div class="nav-ico">🏷️</div>
+  <span class="nav-title">ACOPES AI · TagFlow</span>
+  <a class="back" href="/">← acopesai.com</a>
+</nav>
+
+<div class="hero">
+  <h1>Simple, transparent pricing</h1>
+  <p>Start free — upgrade when you need more analyses per day.</p>
+</div>
+
+<div class="plans">
+
+  <!-- FREE -->
+  <div class="plan">
+    <div class="plan-badge badge-free">Free</div>
+    <div class="plan-price"><sup>$</sup>0<span class="plan-period">/ mo</span></div>
+    <div class="plan-limit"><strong>15 analyses</strong> per day</div>
+    <ul class="plan-features">
+      <li>Real-time tag competition score</li>
+      <li>Opportunity tag suggestions</li>
+      <li>One-click copy</li>
+      <li>Works on any Etsy listing</li>
+    </ul>
+    <a href="https://chrome.google.com/webstore" class="plan-cta cta-outline">Add to Chrome — Free</a>
+  </div>
+
+  <!-- PREMIUM -->
+  <div class="plan featured">
+    <div class="plan-badge badge-premium">Premium</div>
+    <div class="plan-price"><sup>$</sup>6.99<span class="plan-period">/ mo</span></div>
+    <div class="plan-limit"><strong>250 analyses</strong> per day</div>
+    <ul class="plan-features">
+      <li>Everything in Free</li>
+      <li>16× more daily analyses</li>
+      <li>Priority tag scoring</li>
+      <li>Email support</li>
+    </ul>
+    <a href="https://chrome.google.com/webstore" class="plan-cta cta-primary">Get Premium</a>
+  </div>
+
+  <!-- POWER SELLER -->
+  <div class="plan">
+    <div class="plan-badge badge-power">Power Seller</div>
+    <div class="plan-price"><sup>$</sup>10.99<span class="plan-period">/ mo</span></div>
+    <div class="plan-limit"><strong>9,999 analyses</strong> per day</div>
+    <ul class="plan-features">
+      <li>Everything in Premium</li>
+      <li>Near-unlimited daily analyses</li>
+      <li>Bulk shop analysis</li>
+      <li>Priority support</li>
+    </ul>
+    <a href="https://chrome.google.com/webstore" class="plan-cta cta-outline">Get Power Seller</a>
+  </div>
+
+</div>
+
+<p class="note">
+  Payments are processed securely via Paddle. Cancel anytime. ·
+  Questions? <a href="mailto:destek@acopesai.com">destek@acopesai.com</a> ·
+  <a href="/refund-policy">Refund Policy</a>
+</p>
+
+<footer>
+  © 2026 ACOPES AI · TagFlow &nbsp;·&nbsp;
+  <a href="/terms">Terms</a> &nbsp;·&nbsp;
+  <a href="/privacy">Privacy</a> &nbsp;·&nbsp;
+  <a href="/refund-policy">Refund Policy</a>
+</footer>
+
+</body>
+</html>
