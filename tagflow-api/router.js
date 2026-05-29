@@ -43,6 +43,9 @@ const PADDLE_PRICES = {
   power:   (process.env.PADDLE_PRICE_POWER   || 'TODO_PADDLE_PRICE_POWER'  ).trim()
 };
 
+// ── Owner configuration ───────────────────────────────────────────────────────
+const OWNER_EMAIL = 'enesaksesuar1@gmail.com';
+
 // ── SQLite (lazy init) ───────────────────────────────────────────────────────
 let _db = null;
 function db() {
@@ -72,6 +75,24 @@ function db() {
       if (!e.message.includes('duplicate column name')) throw e;
     }
   }
+  // ── Admin columns migration ──────────────────────────────────────────────
+  const _adminCols = [
+    "ALTER TABLE tagflow_users ADD COLUMN role                   TEXT NOT NULL DEFAULT 'user'",
+    "ALTER TABLE tagflow_users ADD COLUMN daily_limit_override   INTEGER",
+    "ALTER TABLE tagflow_users ADD COLUMN account_status         TEXT NOT NULL DEFAULT 'active'",
+    "ALTER TABLE tagflow_users ADD COLUMN admin_note             TEXT",
+    "ALTER TABLE tagflow_users ADD COLUMN billing_subscription_id TEXT"
+  ];
+  for (const sql of _adminCols) {
+    try { _db.exec(sql); } catch (e) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
+  // ── Auto-assign owner role ────────────────────────────────────────────────
+  try {
+    _db.prepare("UPDATE tagflow_users SET role='owner' WHERE email=? AND role!='owner'")
+       .run(OWNER_EMAIL);
+  } catch {}
   console.log('[TAGFLOW DB] ready:', DB_PATH);
   return _db;
 }
@@ -106,6 +127,23 @@ function requireAuth(req, res, next) {
   }
 }
 
+// ── Admin middleware (verifies role from DB — never trust JWT payload) ────────
+function requireAdmin(req, res, next) {
+  const tok = (req.headers.authorization || '').replace(/^Bearer /, '').trim();
+  if (!tok) return res.status(401).json({ success: false, error: 'Token gerekli.' });
+  try {
+    req.tf = verifyTok(tok);
+    const u = db().prepare('SELECT role FROM tagflow_users WHERE id=?').get(req.tf.userId);
+    if (!u || !['owner', 'admin'].includes(u.role || '')) {
+      return res.status(403).json({ success: false, error: 'Bu işlem için yetkiniz yok.' });
+    }
+    req.tf.role = u.role;
+    next();
+  } catch {
+    res.status(401).json({ success: false, error: 'Geçersiz token.' });
+  }
+}
+
 // ── Credit helpers ────────────────────────────────────────────────────────────
 function today() { return new Date().toISOString().slice(0, 10); }
 function freshUser(user) {
@@ -115,16 +153,28 @@ function freshUser(user) {
   }
   return user;
 }
+// ── Effective daily limit (-1 = unlimited) ────────────────────────────────────
+function effectiveLimit(user) {
+  const role = user.role || 'user';
+  if (role === 'owner' || role === 'admin') return -1;
+  if (user.daily_limit_override != null)    return user.daily_limit_override;
+  return PLAN_LIMITS[user.plan] ?? 15;
+}
+
 function creditInfo(user) {
-  const limit = PLAN_LIMITS[user.plan] ?? 15;
-  const meta  = PLAN_META[user.plan]   || PLAN_META.free;
+  const limit = effectiveLimit(user);
+  const meta  = PLAN_META[user.plan] || PLAN_META.free;
+  const role  = user.role || 'user';
   return {
     plan:                 user.plan,
+    role,
     plan_name:            meta.name,
     plan_price:           meta.price,
-    daily_limit:          limit,
+    daily_limit:          limit === -1 ? null : limit,
+    daily_limit_override: user.daily_limit_override ?? null,
+    account_status:       user.account_status || 'active',
     used_today:           user.used_today,
-    remaining:            Math.max(0, limit - (user.used_today || 0)),
+    remaining:            limit === -1 ? null : Math.max(0, limit - (user.used_today || 0)),
     subscription_status:  user.subscription_status  || null,
     subscription_renewal: user.subscription_renewal || null,
     billing_provider:     user.billing_provider     || null
@@ -134,7 +184,7 @@ function creditInfo(user) {
 // ── CORS (Chrome extension → backend) ────────────────────────────────────────
 router.use((req, res, next) => {
   res.setHeader('Access-Control-Allow-Origin',  '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type,Authorization');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
@@ -158,9 +208,14 @@ router.post('/auth/signup', (req, res) => {
       'INSERT INTO tagflow_users (id,email,password_hash,plan,created_at,used_today,last_reset) VALUES (?,?,?,?,?,0,?)'
     ).run(id, cleanEmail, hashPwd(password), 'free', new Date().toISOString(), today());
 
-    const token = signTok({ userId: id, email: cleanEmail, plan: 'free' });
-    console.log('[TAGFLOW SIGNUP]', cleanEmail);
-    res.json({ success: true, token, ...creditInfo({ plan: 'free', used_today: 0 }) });
+    // Assign owner role for the owner email
+    const userRole = cleanEmail === OWNER_EMAIL ? 'owner' : 'user';
+    if (userRole === 'owner') db().prepare("UPDATE tagflow_users SET role='owner' WHERE id=?").run(id);
+
+    const newUser = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(id);
+    const token   = signTok({ userId: id, email: cleanEmail, plan: 'free', role: userRole });
+    console.log('[TAGFLOW SIGNUP]', cleanEmail, 'role=' + userRole);
+    res.json({ success: true, token, email: cleanEmail, ...creditInfo(newUser) });
   } catch (e) {
     console.error('[TAGFLOW SIGNUP ERROR]', e.message);
     res.status(500).json({ success: false, error: 'Sunucu hatası.' });
@@ -181,8 +236,13 @@ router.post('/auth/login', (req, res) => {
       return res.status(401).json({ success: false, error: 'Email veya şifre hatalı.' });
 
     user = freshUser(user);
-    const token = signTok({ userId: user.id, email: user.email, plan: user.plan });
-    console.log('[TAGFLOW LOGIN]', cleanEmail, user.plan);
+    // Ensure owner email always has owner role (safety net for pre-migration rows)
+    if (cleanEmail === OWNER_EMAIL && (user.role || 'user') !== 'owner') {
+      db().prepare("UPDATE tagflow_users SET role='owner' WHERE id=?").run(user.id);
+      user = { ...user, role: 'owner' };
+    }
+    const token = signTok({ userId: user.id, email: user.email, plan: user.plan, role: user.role || 'user' });
+    console.log('[TAGFLOW LOGIN]', cleanEmail, user.plan, 'role=' + (user.role || 'user'));
     res.json({ success: true, token, email: user.email, ...creditInfo(user) });
   } catch (e) {
     console.error('[TAGFLOW LOGIN ERROR]', e.message);
@@ -220,9 +280,14 @@ router.post('/analyze', requireAuth, async (req, res) => {
     if (!user) return res.status(401).json({ success: false, error: 'Kullanıcı bulunamadı.' });
     user = freshUser(user);
 
-    // ── Plan / Credit check ─────────────────────────────────────────
-    const limit = PLAN_LIMITS[user.plan] ?? 15;
-    if (user.used_today >= limit) {
+    // ── Account status check ─────────────────────────────────────────
+    if ((user.account_status || 'active') !== 'active') {
+      return res.status(403).json({ success: false, error: 'Hesabınız devre dışı bırakıldı.' });
+    }
+
+    // ── Plan / Credit check (owner/admin = unlimited) ─────────────────
+    const limit = effectiveLimit(user);
+    if (limit !== -1 && user.used_today >= limit) {
       return res.status(429).json({
         success: false,
         error:   `Günlük limit doldu (${user.used_today}/${limit}). Planınızı yükselterek daha fazla analiz yapın.`,
@@ -509,6 +574,96 @@ router.post('/billing/webhook', async (req, res) => {
   } catch (e) {
     console.error('[BILLING WEBHOOK ERROR]', e.message);
     res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// ADMIN ROUTES  (/api/tagflow/admin/*)
+// All routes require owner or admin role — verified from DB, never from JWT.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/tagflow/admin/users
+router.get('/admin/users', requireAdmin, (req, res) => {
+  try {
+    const users = db().prepare(`
+      SELECT id, email, plan, role, daily_limit_override, account_status,
+             admin_note, used_today, last_reset,
+             billing_customer_id, billing_subscription_id,
+             subscription_status, subscription_renewal, created_at
+      FROM tagflow_users ORDER BY created_at DESC
+    `).all();
+    const result = users.map(u => ({ ...u, effective_daily_limit: effectiveLimit(u) }));
+    res.json({ success: true, users: result, total: result.length });
+  } catch (e) {
+    console.error('[ADMIN USERS ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// PATCH /api/tagflow/admin/users/:id
+router.patch('/admin/users/:id', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const { plan, role, daily_limit_override, account_status, admin_note } = req.body || {};
+  if (plan           && !['free','premium','power'].includes(plan))
+    return res.status(400).json({ success: false, error: 'Geçersiz plan.' });
+  if (role           && !['user','admin','owner'].includes(role))
+    return res.status(400).json({ success: false, error: 'Geçersiz rol.' });
+  if (account_status && !['active','disabled'].includes(account_status))
+    return res.status(400).json({ success: false, error: 'Geçersiz hesap durumu.' });
+  try {
+    if (!db().prepare('SELECT id FROM tagflow_users WHERE id=?').get(id))
+      return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    const sets = []; const vals = [];
+    if (plan                !== undefined) { sets.push('plan=?');                 vals.push(plan); }
+    if (role                !== undefined) { sets.push('role=?');                 vals.push(role); }
+    if (daily_limit_override!== undefined) { sets.push('daily_limit_override=?'); vals.push(daily_limit_override); }
+    if (account_status      !== undefined) { sets.push('account_status=?');       vals.push(account_status); }
+    if (admin_note          !== undefined) { sets.push('admin_note=?');           vals.push(admin_note); }
+    if (!sets.length) return res.status(400).json({ success: false, error: 'Güncellenecek alan yok.' });
+    vals.push(id);
+    db().prepare(`UPDATE tagflow_users SET ${sets.join(',')} WHERE id=?`).run(...vals);
+    const u = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(id);
+    console.log(`[ADMIN PATCH] id=${id} by=${req.tf.userId}`);
+    const { password_hash: _ph, ...safe } = u;
+    res.json({ success: true, user: { ...safe, effective_daily_limit: effectiveLimit(u) } });
+  } catch (e) {
+    console.error('[ADMIN PATCH ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// POST /api/tagflow/admin/users/:id/add-credit
+router.post('/admin/users/:id/add-credit', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  const { amount } = req.body || {};
+  if (typeof amount !== 'number' || amount <= 0 || !Number.isInteger(amount))
+    return res.status(400).json({ success: false, error: 'amount must be a positive integer.' });
+  try {
+    const u = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(id);
+    if (!u) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    const base     = u.daily_limit_override ?? (PLAN_LIMITS[u.plan] ?? 15);
+    const newLimit = base + amount;
+    db().prepare('UPDATE tagflow_users SET daily_limit_override=? WHERE id=?').run(newLimit, id);
+    console.log(`[ADMIN ADD-CREDIT] id=${id} +${amount} → ${newLimit}`);
+    res.json({ success: true, daily_limit_override: newLimit, effective_daily_limit: newLimit });
+  } catch (e) {
+    console.error('[ADMIN ADD-CREDIT ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// POST /api/tagflow/admin/users/:id/reset-usage
+router.post('/admin/users/:id/reset-usage', requireAdmin, (req, res) => {
+  const { id } = req.params;
+  try {
+    if (!db().prepare('SELECT id FROM tagflow_users WHERE id=?').get(id))
+      return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    db().prepare('UPDATE tagflow_users SET used_today=0, last_reset=? WHERE id=?').run(today(), id);
+    console.log(`[ADMIN RESET-USAGE] id=${id} by=${req.tf.userId}`);
+    res.json({ success: true, used_today: 0 });
+  } catch (e) {
+    console.error('[ADMIN RESET-USAGE ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
   }
 });
 

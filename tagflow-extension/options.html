@@ -58,6 +58,12 @@
     .step{flex:1;padding:10px;background:#f9fafb;border:1px solid #f3f4f6;border-radius:8px;text-align:center}
     .step-n{font-size:18px;font-weight:700;color:#0F6E56}
     .step-l{font-size:10px;color:#9ca3af;margin-top:2px;line-height:1.4}
+    /* ── Owner / Admin badge ── */
+    .plan-badge.owner{background:#fef2f2;color:#991b1b;border:1px solid #fecaca}
+    .plan-badge.admin{background:#fff7ed;color:#9a3412;border:1px solid #fed7aa}
+    /* ── Admin dashboard button ── */
+    .btn-admin{display:none;width:100%;padding:9px 12px;background:#fff7ed;color:#9a3412;border:1px solid #fed7aa;border-radius:9px;font:600 12px inherit;cursor:pointer;margin-bottom:8px;transition:all .15s;text-align:center}
+    .btn-admin:hover{background:#fed7aa}
     /* ── Billing card ── */
     .billing-plan-row{display:flex;align-items:center;justify-content:space-between;margin-bottom:14px}
     .billing-upgrade{display:flex;flex-direction:column;gap:8px;margin-bottom:10px}
@@ -120,6 +126,9 @@
         ⚡ Limitiniz dolmak üzere.
         <a id="upgradeCtaLink" href="#" target="_blank">Planı Yükselt →</a>
       </div>
+
+      <!-- Admin dashboard shortcut (owner/admin only) -->
+      <button class="btn-admin" id="adminDashBtn">🛠️ Admin Dashboard</button>
 
       <!-- Renewal date (paid plans) -->
       <div class="renewal-row" id="renewalRow" style="display:none">

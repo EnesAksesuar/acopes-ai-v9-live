@@ -28,6 +28,7 @@
   const btnUpgradePower  = document.getElementById('btnUpgradePower');
   const bestPlanEl       = document.getElementById('bestPlan');
   // ── Billing card elements ──────────────────────────────────────────────────
+  const adminDashBtnEl     = document.getElementById('adminDashBtn');
   const billingCardEl      = document.getElementById('billingCard');
   const billingPlanBadgeEl = document.getElementById('billingPlanBadge');
   const billingUpgradeSect = document.getElementById('billingUpgradeSection');
@@ -62,7 +63,7 @@
   }
 
   // ── Plan display names ────────────────────────────────────────────────────
-  const PLAN_NAMES = { free: 'FREE', premium: 'PREMIUM', power: 'POWER SELLER' };
+  const PLAN_NAMES = { free: 'FREE', premium: 'PREMIUM', power: 'POWER SELLER', owner: 'OWNER', admin: 'ADMIN' };
 
   // ── Show logged-in UI ─────────────────────────────────────────────────────
   function showLoggedIn(data) {
@@ -72,17 +73,37 @@
 
     // ── User + plan badge ───────────────────────────────────────────────────
     userEmailEl.textContent = data.email || '';
-    const plan = (data.plan || 'free').toLowerCase();
-    planBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
-    planBadgeEl.className   = 'plan-badge ' + plan;
+    const plan    = (data.plan  || 'free').toLowerCase();
+    const role    = (data.role  || 'user').toLowerCase();
+    const isAdmin = role === 'owner' || role === 'admin';
+
+    // Badge: show role for owner/admin, plan otherwise
+    if (isAdmin) {
+      planBadgeEl.textContent = PLAN_NAMES[role] || role.toUpperCase();
+      planBadgeEl.className   = 'plan-badge ' + role;
+    } else {
+      planBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
+      planBadgeEl.className   = 'plan-badge ' + plan;
+    }
+
+    // Admin dashboard button
+    if (adminDashBtnEl) {
+      adminDashBtnEl.style.display = isAdmin ? 'block' : 'none';
+    }
 
     // ── Credit bar ──────────────────────────────────────────────────────────
     const used  = data.used_today  || 0;
-    const limit = data.daily_limit || 15;
-    const pct   = Math.min(100, Math.round((used / limit) * 100));
-    creditBarEl.style.width = pct + '%';
-    usedNumEl.textContent   = used;
-    limitNumEl.textContent  = limit.toLocaleString();
+    const limit = data.daily_limit;                               // null = unlimited
+    if (isAdmin || limit === null) {
+      creditBarEl.style.width = '0%';
+      usedNumEl.textContent   = used;
+      limitNumEl.textContent  = '∞ Unlimited';
+    } else {
+      const pct = Math.min(100, Math.round((used / limit) * 100));
+      creditBarEl.style.width = pct + '%';
+      usedNumEl.textContent   = used;
+      limitNumEl.textContent  = limit.toLocaleString();
+    }
 
     // Low-credit warning (free plan, ≤ 3 remaining)
     const remaining = typeof data.remaining === 'number' ? data.remaining : (limit - used);
@@ -102,10 +123,14 @@
       }
     }
 
-    // ── Upgrade buttons (auth card, kept for compatibility) ─────────────────
+    // ── Upgrade buttons (auth card) ─────────────────────────────────────────
     if (upgradeSectionEl && btnUpgradePremium && btnUpgradePower && bestPlanEl) {
-      if (plan === 'free') {
-        upgradeSectionEl.style.display = 'flex';
+      if (isAdmin) {
+        // Owner/admin: hide upgrade section entirely
+        upgradeSectionEl.style.display = 'none';
+        bestPlanEl.style.display       = 'none';
+      } else if (plan === 'free') {
+        upgradeSectionEl.style.display  = 'flex';
         btnUpgradePremium.style.display = '';
         btnUpgradePower.style.display   = '';
         bestPlanEl.style.display        = 'none';
@@ -115,16 +140,22 @@
         btnUpgradePower.style.display   = '';
         bestPlanEl.style.display        = 'none';
       } else {
-        // power — best plan
+        // power
         upgradeSectionEl.style.display = 'none';
         bestPlanEl.style.display       = 'block';
       }
     }
 
-    // Billing card — update plan badge and button visibility
-    billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
-    billingPlanBadgeEl.className   = 'plan-badge ' + plan;
-    if (plan === 'free') {
+    // ── Billing card — update plan badge and button visibility ───────────────
+    const billingLabel = isAdmin ? (PLAN_NAMES[role] || role.toUpperCase()) : (PLAN_NAMES[plan] || plan.toUpperCase());
+    billingPlanBadgeEl.textContent = billingLabel;
+    billingPlanBadgeEl.className   = 'plan-badge ' + (isAdmin ? role : plan);
+    if (isAdmin) {
+      // Owner/admin: hide upgrade buttons, show unlimited message
+      billingUpgradeSect.style.display = 'none';
+      billingBestPlanEl.style.display  = 'block';
+      billingBestPlanEl.textContent    = 'Owner account — unlimited analyses.';
+    } else if (plan === 'free') {
       billingUpgradeSect.style.display = 'flex';
       billingBtnPremium.style.display  = '';
       billingBtnPower.style.display    = '';
@@ -135,9 +166,10 @@
       billingBtnPower.style.display    = '';
       billingBestPlanEl.style.display  = 'none';
     } else {
-      // power — already on best plan
+      // power
       billingUpgradeSect.style.display = 'none';
       billingBestPlanEl.style.display  = 'block';
+      billingBestPlanEl.textContent    = 'You are on the highest plan.';
     }
   }
 
@@ -268,6 +300,13 @@
   // Billing-card buttons (new, primary)
   if (billingBtnPremium) billingBtnPremium.addEventListener('click', () => handleUpgrade('premium', billingBtnPremium));
   if (billingBtnPower)   billingBtnPower.addEventListener('click',   () => handleUpgrade('power',   billingBtnPower));
+
+  // ── Admin dashboard shortcut ─────────────────────────────────────────────
+  if (adminDashBtnEl) {
+    adminDashBtnEl.addEventListener('click', () => {
+      window.open('https://acopesai.com/admin.html', '_blank');
+    });
+  }
 
   // ── Enter key support ─────────────────────────────────────────────────────
   [emailEl, passwordEl].forEach(el => {
