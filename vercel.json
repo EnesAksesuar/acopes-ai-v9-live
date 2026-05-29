@@ -17,6 +17,7 @@
     { "src": "/pricing",       "dest": "/pricing.html" },
     { "src": "/terms",         "dest": "/terms.html" },
     { "src": "/privacy",       "dest": "/privacy.html" },
+    { "src": "/refund",        "dest": "/refund.html" },
     { "src": "/refund-policy", "dest": "/refund-policy.html" },
     { "handle": "filesystem" },
     { "src": "/(.*)",          "dest": "server.js" }
