@@ -319,9 +319,20 @@ router.get('/billing/status', requireAuth, (req, res) => {
   }
 });
 
+// ── Billing helper ────────────────────────────────────────────────────────────
+function planFromPriceId(priceId) {
+  if (priceId && priceId === PADDLE_PRICES.power)   return 'power';
+  if (priceId && priceId === PADDLE_PRICES.premium) return 'premium';
+  return null;
+}
+
 // POST /api/tagflow/billing/create-checkout
 // Body: { plan: 'premium' | 'power' }
 // Returns: { success, checkout_url, placeholder? }
+// NOTE: Configure success/cancel redirect URLs in Paddle Dashboard →
+//   Settings → Checkout → Redirect users to a custom URL after payment:
+//   Success: https://acopesai.com/pricing?checkout=success
+//   Cancel:  https://acopesai.com/pricing?checkout=cancelled
 router.post('/billing/create-checkout', requireAuth, async (req, res) => {
   const { plan } = req.body || {};
   if (!plan || !['premium', 'power'].includes(plan)) {
@@ -351,15 +362,20 @@ router.post('/billing/create-checkout', requireAuth, async (req, res) => {
       });
     }
 
+    // Paddle v2: customer_id (returning) OR customer.email (new) — never both
+    const txnBody = {
+      items:           [{ price_id: priceId, quantity: 1 }],
+      custom_data:     { tagflow_user_id: user.id },
+      collection_mode: 'automatic',
+      ...(user.billing_customer_id
+        ? { customer_id: user.billing_customer_id }
+        : { customer:   { email: user.email } })
+    };
+
     const paddleRes = await fetch(`${PADDLE_BASE_URL}/transactions`, {
       method:  'POST',
       headers: { 'Authorization': `Bearer ${PADDLE_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        items:           [{ price_id: priceId, quantity: 1 }],
-        customer:        { email: user.email, ...(user.billing_customer_id ? { id: user.billing_customer_id } : {}) },
-        custom_data:     { tagflow_user_id: user.id },
-        collection_mode: 'automatic'
-      })
+      body:    JSON.stringify(txnBody)
     });
 
     const paddleData = await paddleRes.json();
@@ -411,42 +427,68 @@ router.post('/billing/webhook', async (req, res) => {
   console.log('[BILLING WEBHOOK] event_type:', type);
 
   try {
-    // ── subscription.activated | subscription.updated ─────────────────────
-    if (type === 'subscription.activated' || type === 'subscription.updated') {
+    // ── transaction.completed — payment cleared (one-time or first sub charge) ─
+    if (type === 'transaction.completed') {
       const userId     = event.data?.custom_data?.tagflow_user_id;
       const priceId    = event.data?.items?.[0]?.price?.id || '';
-      const customerId = event.data?.customer_id || '';
+      const customerId = event.data?.customer_id || null;
+      const plan       = planFromPriceId(priceId);
+
+      if (!userId || !plan) {
+        console.warn('[BILLING WEBHOOK] transaction.completed — cannot map user/plan:', { userId, priceId });
+        return res.status(200).json({ received: true, warning: 'Could not map to plan' });
+      }
+      db().prepare(`
+        UPDATE tagflow_users
+        SET plan=?, subscription_status='active', billing_provider='paddle',
+            billing_customer_id=COALESCE(?, billing_customer_id)
+        WHERE id=?
+      `).run(plan, customerId, userId);
+      console.log(`[BILLING WEBHOOK] transaction.completed → userId=${userId} plan=${plan}`);
+    }
+
+    // ── subscription.created | subscription.activated | subscription.updated ─
+    else if ([
+      'subscription.created',
+      'subscription.activated',
+      'subscription.updated'
+    ].includes(type)) {
+      const userId     = event.data?.custom_data?.tagflow_user_id;
+      const priceId    = event.data?.items?.[0]?.price?.id || '';
+      const customerId = event.data?.customer_id || null;
       const status     = event.data?.status      || 'active';
       const renewal    = event.data?.next_billed_at || null;
-      const plan       = priceId === PADDLE_PRICES.power    ? 'power'
-                       : priceId === PADDLE_PRICES.premium   ? 'premium'
-                       : null;
+      const plan       = planFromPriceId(priceId);
 
       if (!userId || !plan) {
         console.warn('[BILLING WEBHOOK] Cannot map to user/plan:', { userId, priceId });
         return res.status(200).json({ received: true, warning: 'Could not map to plan' });
       }
-
       db().prepare(`
         UPDATE tagflow_users
         SET plan=?, subscription_status=?, billing_provider='paddle',
             billing_customer_id=?, subscription_renewal=?
         WHERE id=?
       `).run(plan, status, customerId, renewal, userId);
-      console.log(`[BILLING WEBHOOK] Upgraded userId=${userId} → plan=${plan} status=${status}`);
+      console.log(`[BILLING WEBHOOK] ${type} → userId=${userId} plan=${plan} status=${status}`);
     }
 
-    // ── subscription.cancelled | subscription.paused ──────────────────────
-    else if (type === 'subscription.cancelled' || type === 'subscription.paused') {
+    // ── subscription.canceled | subscription.cancelled | subscription.paused ─
+    // Paddle v2 sends "canceled" (US). Accept both spellings for safety.
+    else if ([
+      'subscription.canceled',
+      'subscription.cancelled',
+      'subscription.paused'
+    ].includes(type)) {
       const userId    = event.data?.custom_data?.tagflow_user_id;
-      const newStatus = type === 'subscription.paused' ? 'paused' : 'cancelled';
+      const newStatus = type === 'subscription.paused' ? 'paused' : 'canceled';
       if (userId) {
         db().prepare(`
           UPDATE tagflow_users
           SET plan='free', subscription_status=?, subscription_renewal=NULL
           WHERE id=?
         `).run(newStatus, userId);
-        console.log(`[BILLING WEBHOOK] Downgraded userId=${userId} → free (${newStatus})`);
+        console.log(`[BILLING WEBHOOK] ${type} → userId=${userId} downgraded to free`);
       }
     }
 
@@ -455,7 +497,7 @@ router.post('/billing/webhook', async (req, res) => {
       const userId = event.data?.custom_data?.tagflow_user_id;
       if (userId) {
         db().prepare(`UPDATE tagflow_users SET subscription_status='past_due' WHERE id=?`).run(userId);
-        console.log(`[BILLING WEBHOOK] past_due userId=${userId}`);
+        console.log(`[BILLING WEBHOOK] past_due → userId=${userId}`);
       }
     }
 
