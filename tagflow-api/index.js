@@ -21,7 +21,10 @@ const PORT      = process.env.PORT || 4200;
 const IS_VERCEL = Boolean(process.env.VERCEL || process.env.AWS_LAMBDA_FUNCTION_NAME);
 
 // ── Middleware ────────────────────────────────────────────────────────────────
-app.use(express.json());
+// Capture rawBody for Paddle webhook signature verification
+app.use(express.json({
+  verify: (req, _res, buf) => { req.rawBody = buf.toString('utf8'); }
+}));
 app.use((_req, res, next) => {
   res.setTimeout(15_000, () => {
     if (!res.headersSent) res.status(504).json({ success: false, error: 'timeout' });
@@ -56,6 +59,9 @@ if (!IS_VERCEL) {
     console.log(`  POST /api/tagflow/auth/login`);
     console.log(`  GET  /api/tagflow/user/me`);
     console.log(`  POST /api/tagflow/analyze`);
+    console.log(`  GET  /api/tagflow/billing/status`);
+    console.log(`  POST /api/tagflow/billing/create-checkout`);
+    console.log(`  POST /api/tagflow/billing/webhook`);
   });
 }
 

@@ -20,8 +20,28 @@ const TAGFLOW_JWT_SECRET = (process.env.TAGFLOW_JWT_SECRET || 'tagflow-dev-secre
 const ANTHROPIC_KEY      = (process.env.ANTHROPIC_API_KEY  || '').trim();
 const DB_PATH            = path.join(process.env.ACOPES_DATA_DIR || '/tmp', 'acopes-ai', 'tagflow.db');
 
-// ── Plan limits (-1 = unlimited) ─────────────────────────────────────────────
-const PLAN_LIMITS = { free: 15, premium: -1, power: -1 };
+// ── Plan limits (analyses / day) ─────────────────────────────────────────────
+const PLAN_LIMITS = { free: 15, premium: 250, power: 9999 };
+
+// ── Plan display metadata ─────────────────────────────────────────────────────
+const PLAN_META = {
+  free:    { name: 'Free',         price: '$0',     limit: 15   },
+  premium: { name: 'Premium',      price: '$6.99',  limit: 250  },
+  power:   { name: 'Power Seller', price: '$10.99', limit: 9999 }
+};
+
+// ── Paddle config (set env vars to go live; placeholder mode until then) ──────
+const PADDLE_API_KEY        = (process.env.PADDLE_API_KEY        || '').trim();
+const PADDLE_WEBHOOK_SECRET = (process.env.PADDLE_WEBHOOK_SECRET || '').trim();
+const PADDLE_SANDBOX        = process.env.PADDLE_SANDBOX === 'true';
+const PADDLE_BASE_URL       = PADDLE_SANDBOX
+  ? 'https://sandbox-api.paddle.com'
+  : 'https://api.paddle.com';
+// TODO: Create products in Paddle dashboard, then set these env vars in Railway
+const PADDLE_PRICES = {
+  premium: (process.env.PADDLE_PRICE_PREMIUM || 'TODO_PADDLE_PRICE_PREMIUM').trim(),
+  power:   (process.env.PADDLE_PRICE_POWER   || 'TODO_PADDLE_PRICE_POWER'  ).trim()
+};
 
 // ── SQLite (lazy init) ───────────────────────────────────────────────────────
 let _db = null;
@@ -40,6 +60,18 @@ function db() {
       last_reset    TEXT NOT NULL
     )
   `);
+  // ── Billing columns migration (safe for existing DBs without these cols) ────
+  const _billingCols = [
+    'ALTER TABLE tagflow_users ADD COLUMN subscription_status  TEXT',
+    'ALTER TABLE tagflow_users ADD COLUMN billing_provider     TEXT',
+    'ALTER TABLE tagflow_users ADD COLUMN billing_customer_id  TEXT',
+    'ALTER TABLE tagflow_users ADD COLUMN subscription_renewal TEXT'
+  ];
+  for (const sql of _billingCols) {
+    try { _db.exec(sql); } catch (e) {
+      if (!e.message.includes('duplicate column name')) throw e;
+    }
+  }
   console.log('[TAGFLOW DB] ready:', DB_PATH);
   return _db;
 }
@@ -85,11 +117,17 @@ function freshUser(user) {
 }
 function creditInfo(user) {
   const limit = PLAN_LIMITS[user.plan] ?? 15;
+  const meta  = PLAN_META[user.plan]   || PLAN_META.free;
   return {
-    plan:       user.plan,
-    daily_limit: limit,
-    used_today: user.used_today,
-    remaining:  limit === -1 ? null : Math.max(0, limit - user.used_today)
+    plan:                 user.plan,
+    plan_name:            meta.name,
+    plan_price:           meta.price,
+    daily_limit:          limit,
+    used_today:           user.used_today,
+    remaining:            Math.max(0, limit - (user.used_today || 0)),
+    subscription_status:  user.subscription_status  || null,
+    subscription_renewal: user.subscription_renewal || null,
+    billing_provider:     user.billing_provider     || null
   };
 }
 
@@ -184,10 +222,10 @@ router.post('/analyze', requireAuth, async (req, res) => {
 
     // ── Plan / Credit check ─────────────────────────────────────────
     const limit = PLAN_LIMITS[user.plan] ?? 15;
-    if (limit !== -1 && user.used_today >= limit) {
+    if (user.used_today >= limit) {
       return res.status(429).json({
         success: false,
-        error:   `Günlük limit doldu (${user.used_today}/${limit}). Premium'a geçerek sınırsız analiz yapın.`,
+        error:   `Günlük limit doldu (${user.used_today}/${limit}). Planınızı yükselterek daha fazla analiz yapın.`,
         upgrade: true,
         credits: creditInfo(user)
       });
@@ -255,5 +293,181 @@ async function getAnthropicModel() {
   }
   return _model;
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// BILLING ROUTES  (/api/tagflow/billing/*)
+// Paddle-ready — placeholder mode when PADDLE_API_KEY is not set.
+// To go live: set PADDLE_API_KEY, PADDLE_WEBHOOK_SECRET, PADDLE_PRICE_PREMIUM,
+//             PADDLE_PRICE_POWER in Railway Variables.
+// ─────────────────────────────────────────────────────────────────────────────
+
+// GET /api/tagflow/billing/status
+router.get('/billing/status', requireAuth, (req, res) => {
+  try {
+    let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    user = freshUser(user);
+    res.json({
+      success:         true,
+      email:           user.email,
+      available_plans: PLAN_META,
+      ...creditInfo(user)
+    });
+  } catch (e) {
+    console.error('[BILLING STATUS ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası.' });
+  }
+});
+
+// POST /api/tagflow/billing/create-checkout
+// Body: { plan: 'premium' | 'power' }
+// Returns: { success, checkout_url, placeholder? }
+router.post('/billing/create-checkout', requireAuth, async (req, res) => {
+  const { plan } = req.body || {};
+  if (!plan || !['premium', 'power'].includes(plan)) {
+    return res.status(400).json({ success: false, error: "Plan 'premium' veya 'power' olmalı." });
+  }
+
+  // ── Placeholder mode — live when PADDLE_API_KEY is set ────────────────────
+  if (!PADDLE_API_KEY || PADDLE_API_KEY.startsWith('TODO')) {
+    const planLabel = plan === 'power' ? 'Power+Seller' : 'Premium';
+    console.log(`[BILLING CHECKOUT] PLACEHOLDER plan=${plan} user=${req.tf.email}`);
+    return res.json({
+      success:      true,
+      placeholder:  true,
+      checkout_url: `https://tagflow.acopesai.com/upgrade?plan=${plan}&email=${encodeURIComponent(req.tf.email || '')}`,
+      message:      'Paddle henüz yapılandırılmadı. Ödeme altyapısı yakında aktif olacak.'
+    });
+  }
+
+  // ── Live Paddle Billing v2 ────────────────────────────────────────────────
+  try {
+    const user    = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
+    const priceId = PADDLE_PRICES[plan];
+    if (!priceId || priceId.startsWith('TODO')) {
+      return res.status(500).json({
+        success: false,
+        error:   `PADDLE_PRICE_${plan.toUpperCase()} env var eksik. Railway Variables'a ekleyin.`
+      });
+    }
+
+    const paddleRes = await fetch(`${PADDLE_BASE_URL}/transactions`, {
+      method:  'POST',
+      headers: { 'Authorization': `Bearer ${PADDLE_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items:           [{ price_id: priceId, quantity: 1 }],
+        customer:        { email: user.email, ...(user.billing_customer_id ? { id: user.billing_customer_id } : {}) },
+        custom_data:     { tagflow_user_id: user.id },
+        collection_mode: 'automatic'
+      })
+    });
+
+    const paddleData = await paddleRes.json();
+    if (!paddleRes.ok) {
+      console.error('[BILLING CHECKOUT] Paddle error:', JSON.stringify(paddleData).slice(0, 300));
+      return res.status(502).json({ success: false, error: 'Paddle checkout oluşturulamadı.' });
+    }
+
+    const checkoutUrl = paddleData.data?.checkout?.url;
+    console.log(`[BILLING CHECKOUT] plan=${plan} user=${user.email} → ${checkoutUrl}`);
+    res.json({ success: true, checkout_url: checkoutUrl });
+  } catch (e) {
+    console.error('[BILLING CHECKOUT ERROR]', e.message);
+    res.status(500).json({ success: false, error: 'Sunucu hatası: ' + e.message });
+  }
+});
+
+// POST /api/tagflow/billing/webhook
+// Set Paddle Notification URL to:
+//   https://acopes-ai-production.up.railway.app/api/tagflow/billing/webhook
+// TODO: Set PADDLE_WEBHOOK_SECRET in Railway env to enable signature verification.
+// NOTE: index.js captures req.rawBody via express.json({ verify }) for this route.
+router.post('/billing/webhook', async (req, res) => {
+  // ── Signature verification ────────────────────────────────────────────────
+  if (PADDLE_WEBHOOK_SECRET && !PADDLE_WEBHOOK_SECRET.startsWith('TODO')) {
+    const sig  = req.headers['paddle-signature'] || '';
+    const body = req.rawBody || '';
+    const ts   = (sig.match(/ts=(\d+)/)         || [])[1] || '';
+    const h1   = (sig.match(/h1=([a-f0-9]+)/)   || [])[1] || '';
+    if (!ts || !h1) {
+      console.warn('[BILLING WEBHOOK] Missing Paddle-Signature header');
+      return res.status(400).json({ error: 'Missing signature' });
+    }
+    const expected = crypto.createHmac('sha256', PADDLE_WEBHOOK_SECRET)
+      .update(`${ts}:${body}`).digest('hex');
+    try {
+      if (!crypto.timingSafeEqual(Buffer.from(h1, 'hex'), Buffer.from(expected, 'hex'))) {
+        console.warn('[BILLING WEBHOOK] Signature mismatch');
+        return res.status(401).json({ error: 'Invalid signature' });
+      }
+    } catch { return res.status(401).json({ error: 'Signature error' }); }
+  } else {
+    // TODO: Set PADDLE_WEBHOOK_SECRET to enable verification before going live
+    console.warn('[BILLING WEBHOOK] PLACEHOLDER — signature not verified');
+  }
+
+  const event = req.body || {};
+  const type  = event.event_type || 'unknown';
+  console.log('[BILLING WEBHOOK] event_type:', type);
+
+  try {
+    // ── subscription.activated | subscription.updated ─────────────────────
+    if (type === 'subscription.activated' || type === 'subscription.updated') {
+      const userId     = event.data?.custom_data?.tagflow_user_id;
+      const priceId    = event.data?.items?.[0]?.price?.id || '';
+      const customerId = event.data?.customer_id || '';
+      const status     = event.data?.status      || 'active';
+      const renewal    = event.data?.next_billed_at || null;
+      const plan       = priceId === PADDLE_PRICES.power    ? 'power'
+                       : priceId === PADDLE_PRICES.premium   ? 'premium'
+                       : null;
+
+      if (!userId || !plan) {
+        console.warn('[BILLING WEBHOOK] Cannot map to user/plan:', { userId, priceId });
+        return res.status(200).json({ received: true, warning: 'Could not map to plan' });
+      }
+
+      db().prepare(`
+        UPDATE tagflow_users
+        SET plan=?, subscription_status=?, billing_provider='paddle',
+            billing_customer_id=?, subscription_renewal=?
+        WHERE id=?
+      `).run(plan, status, customerId, renewal, userId);
+      console.log(`[BILLING WEBHOOK] Upgraded userId=${userId} → plan=${plan} status=${status}`);
+    }
+
+    // ── subscription.cancelled | subscription.paused ──────────────────────
+    else if (type === 'subscription.cancelled' || type === 'subscription.paused') {
+      const userId    = event.data?.custom_data?.tagflow_user_id;
+      const newStatus = type === 'subscription.paused' ? 'paused' : 'cancelled';
+      if (userId) {
+        db().prepare(`
+          UPDATE tagflow_users
+          SET plan='free', subscription_status=?, subscription_renewal=NULL
+          WHERE id=?
+        `).run(newStatus, userId);
+        console.log(`[BILLING WEBHOOK] Downgraded userId=${userId} → free (${newStatus})`);
+      }
+    }
+
+    // ── subscription.past_due ─────────────────────────────────────────────
+    else if (type === 'subscription.past_due') {
+      const userId = event.data?.custom_data?.tagflow_user_id;
+      if (userId) {
+        db().prepare(`UPDATE tagflow_users SET subscription_status='past_due' WHERE id=?`).run(userId);
+        console.log(`[BILLING WEBHOOK] past_due userId=${userId}`);
+      }
+    }
+
+    else {
+      console.log(`[BILLING WEBHOOK] Unhandled event: ${type}`);
+    }
+
+    res.status(200).json({ received: true });
+  } catch (e) {
+    console.error('[BILLING WEBHOOK ERROR]', e.message);
+    res.status(500).json({ error: 'Webhook processing failed' });
+  }
+});
 
 export default router;

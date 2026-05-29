@@ -29,17 +29,29 @@
     .user-row{display:flex;align-items:center;gap:10px;margin-bottom:14px}
     .user-avatar{width:36px;height:36px;background:#E1F5EE;border-radius:50%;display:flex;align-items:center;justify-content:center;font-size:16px;flex-shrink:0}
     .user-email{font-size:13px;font-weight:600;color:#111827}
-    .plan-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;margin-top:2px}
+    .plan-badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;margin-top:2px;letter-spacing:.03em}
     .plan-badge.free{background:#f3f4f6;color:#6b7280}
     .plan-badge.premium{background:#fef9c3;color:#854d0e}
     .plan-badge.power{background:#ede9fe;color:#5b21b6}
-    .credit-wrap{margin-bottom:14px}
+    .credit-wrap{margin-bottom:10px}
     .credit-label{font-size:11px;color:#6b7280;margin-bottom:5px}
     .credit-bar-bg{height:6px;background:#f3f4f6;border-radius:4px;overflow:hidden;margin-bottom:4px}
     .credit-bar-fill{height:100%;border-radius:4px;background:#1D9E75;transition:width .4s ease}
     .credit-nums{font-size:12px;color:#374151;font-weight:600}
     .credit-nums .used{color:#0F6E56}
-    .upgrade-cta{background:#fef9c3;border:1px solid #fde047;border-radius:8px;padding:10px 12px;font-size:12px;color:#854d0e;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:10px}
+    .renewal-row{font-size:11px;color:#9ca3af;margin-bottom:10px}
+    .renewal-row strong{color:#374151}
+    /* ── Upgrade CTAs ── */
+    .upgrade-section{display:flex;flex-direction:column;gap:7px;margin-bottom:10px}
+    .btn-upgrade{width:100%;padding:10px 12px;border:none;border-radius:9px;font:600 12px inherit;cursor:pointer;transition:all .15s;display:flex;align-items:center;justify-content:space-between}
+    .btn-upgrade .price{font-weight:400;opacity:.8;font-size:11px}
+    .btn-upgrade.premium{background:#fef9c3;color:#854d0e;border:1px solid #fde047}
+    .btn-upgrade.premium:hover{background:#fde047}
+    .btn-upgrade.power{background:#ede9fe;color:#5b21b6;border:1px solid #c4b5fd}
+    .btn-upgrade.power:hover{background:#c4b5fd}
+    .best-plan{background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 12px;font-size:12px;color:#166534;margin-bottom:10px;text-align:center}
+    /* Low-credit warning */
+    .upgrade-cta{background:#fef9c3;border:1px solid #fde047;border-radius:8px;padding:8px 12px;font-size:11px;color:#854d0e;display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:8px}
     .upgrade-cta a{color:#854d0e;font-weight:700}
     /* ── Steps ── */
     .steps{display:flex;gap:8px}
@@ -74,22 +86,51 @@
 
     <!-- Logged-IN view (hidden initially) -->
     <div id="loggedInView" style="display:none">
+
+      <!-- User + plan -->
       <div class="user-row">
         <div class="user-avatar">👤</div>
         <div>
           <div class="user-email" id="userEmail"></div>
-          <span class="plan-badge" id="planBadge">FREE</span>
+          <span class="plan-badge free" id="planBadge">FREE</span>
         </div>
       </div>
+
+      <!-- Daily credit bar -->
       <div class="credit-wrap" id="creditWrap">
         <div class="credit-label">Günlük Analiz Kullanımı</div>
         <div class="credit-bar-bg"><div class="credit-bar-fill" id="creditBar" style="width:0%"></div></div>
         <div class="credit-nums"><span class="used" id="usedNum">0</span> / <span id="limitNum">15</span> analiz kullanıldı</div>
       </div>
+
+      <!-- Low-credit warning (free plan only) -->
       <div class="upgrade-cta" id="upgradeCta" style="display:none">
         ⚡ Limitiniz dolmak üzere.
-        <a href="https://tagflow.acopesai.com/upgrade" target="_blank">Premium'a geç →</a>
+        <a id="upgradeCtaLink" href="#" target="_blank">Planı Yükselt →</a>
       </div>
+
+      <!-- Renewal date (paid plans) -->
+      <div class="renewal-row" id="renewalRow" style="display:none">
+        Yenileme: <strong id="renewalDate"></strong>
+      </div>
+
+      <!-- Upgrade buttons -->
+      <div class="upgrade-section" id="upgradeSection">
+        <button class="btn-upgrade premium" id="btnUpgradePremium">
+          ⚡ Premium'a Geç
+          <span class="price">$6.99/ay · 250 analiz/gün</span>
+        </button>
+        <button class="btn-upgrade power" id="btnUpgradePower">
+          🚀 Power Seller'a Geç
+          <span class="price">$10.99/ay · 9,999 analiz/gün</span>
+        </button>
+      </div>
+
+      <!-- Best plan confirmation -->
+      <div class="best-plan" id="bestPlan" style="display:none">
+        🏆 En iyi plandayısınız! Günde 9,999 analiz hakkınız var.
+      </div>
+
       <button class="btn-d" id="logoutBtn">Çıkış Yap</button>
     </div>
 
