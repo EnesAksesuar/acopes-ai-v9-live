@@ -2,7 +2,7 @@
 
 (function () {
 
-  const BACKEND = 'https://acopes-ai-v9-live.vercel.app';
+  const BACKEND = 'https://acopes-ai-production.up.railway.app';
 
   // ── Elements ──────────────────────────────────────────────────────────────
   const emailEl      = document.getElementById('emailInput');

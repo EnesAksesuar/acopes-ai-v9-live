@@ -35,7 +35,7 @@
   "permissions": ["storage", "activeTab"],
   "host_permissions": [
     "https://www.etsy.com/*",
-    "https://acopes-ai-v9-live.vercel.app/*"
+    "https://acopes-ai-production.up.railway.app/*"
   ],
   "content_security_policy": {
     "extension_pages": "script-src 'self'; object-src 'self'"

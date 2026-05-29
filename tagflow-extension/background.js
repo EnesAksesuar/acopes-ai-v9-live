@@ -1,7 +1,7 @@
 'use strict';
 
 // ── TagFlow backend (Vercel) ──────────────────────────────────────────────────
-const TAGFLOW_BACKEND = 'https://acopes-ai-v9-live.vercel.app';
+const TAGFLOW_BACKEND = 'https://acopes-ai-production.up.railway.app';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Fetch Etsy listing page (unchanged — Etsy scraping, no auth needed)
