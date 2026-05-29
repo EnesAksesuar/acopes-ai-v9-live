@@ -1,342 +1,263 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8"/>
-  <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
-  <title>TagFlow Admin Dashboard</title>
-  <style>
-    *{box-sizing:border-box;margin:0;padding:0}
-    body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;background:#f3f4f6;color:#111827;min-height:100vh}
-    /* ── Auth ── */
-    #loginWrap{display:flex;align-items:center;justify-content:center;min-height:100vh}
-    .login-card{background:#fff;border:1px solid #e5e7eb;border-radius:14px;padding:36px 32px;width:100%;max-width:380px;box-shadow:0 4px 16px rgba(0,0,0,.06)}
-    .login-card h1{font-size:20px;margin-bottom:6px}
-    .login-card p{font-size:13px;color:#6b7280;margin-bottom:22px}
-    .login-card input{width:100%;padding:10px 12px;border:1px solid #e5e7eb;border-radius:8px;font:13px inherit;margin-bottom:10px;background:#fafafa}
-    .login-card input:focus{outline:none;border-color:#0F6E56;background:#fff}
-    .btn-green{width:100%;padding:11px;background:#1D9E75;color:#fff;border:none;border-radius:9px;font:600 14px inherit;cursor:pointer}
-    .btn-green:hover{background:#0F6E56}
-    .btn-green:disabled{background:#9ca3af;cursor:not-allowed}
-    #loginErr{color:#b91c1c;font-size:12px;margin-top:8px;display:none}
-    /* ── Dashboard ── */
-    #dashWrap{display:none}
-    .topbar{background:#111827;color:#fff;padding:14px 24px;display:flex;align-items:center;justify-content:space-between}
-    .topbar h1{font-size:16px;font-weight:700}
-    .topbar-right{display:flex;align-items:center;gap:12px;font-size:13px;color:#9ca3af}
-    .btn-sm{padding:6px 14px;border-radius:7px;font:600 12px inherit;cursor:pointer;border:none}
-    .btn-logout{background:#374151;color:#fff}
-    .btn-logout:hover{background:#1f2937}
-    /* ── Stats ── */
-    .stats-bar{display:flex;gap:14px;padding:16px 24px;background:#fff;border-bottom:1px solid #e5e7eb;flex-wrap:wrap}
-    .stat{background:#f9fafb;border:1px solid #e5e7eb;border-radius:10px;padding:12px 18px;min-width:110px}
-    .stat-val{font-size:22px;font-weight:700;color:#111827}
-    .stat-lbl{font-size:11px;color:#6b7280;margin-top:2px}
-    /* ── Controls ── */
-    .controls{display:flex;align-items:center;gap:10px;padding:14px 24px;background:#fff;border-bottom:1px solid #e5e7eb}
-    .controls input{padding:8px 12px;border:1px solid #e5e7eb;border-radius:8px;font:13px inherit;width:260px}
-    .controls input:focus{outline:none;border-color:#0F6E56}
-    .btn-refresh{padding:8px 16px;background:#f3f4f6;border:1px solid #e5e7eb;border-radius:8px;font:600 12px inherit;cursor:pointer}
-    .btn-refresh:hover{background:#e5e7eb}
-    /* ── Table ── */
-    .table-wrap{padding:20px 24px;overflow-x:auto}
-    table{width:100%;border-collapse:collapse;background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;font-size:13px}
-    th{background:#f9fafb;padding:10px 12px;text-align:left;font-size:11px;font-weight:700;color:#6b7280;text-transform:uppercase;letter-spacing:.04em;border-bottom:1px solid #e5e7eb}
-    td{padding:10px 12px;border-bottom:1px solid #f3f4f6;vertical-align:middle}
-    tr:last-child td{border-bottom:none}
-    tr:hover td{background:#fafafa}
-    .badge{display:inline-block;font-size:10px;font-weight:700;padding:2px 8px;border-radius:20px;white-space:nowrap}
-    .badge-free{background:#f3f4f6;color:#6b7280}
-    .badge-premium{background:#fef9c3;color:#854d0e}
-    .badge-power{background:#ede9fe;color:#5b21b6}
-    .badge-owner{background:#fef2f2;color:#991b1b}
-    .badge-admin{background:#fff7ed;color:#9a3412}
-    .badge-user{background:#f0fdf4;color:#166534}
-    .badge-active{background:#f0fdf4;color:#166534}
-    .badge-disabled{background:#fef2f2;color:#991b1b}
-    .actions{display:flex;gap:5px;flex-wrap:wrap}
-    .act-btn{padding:4px 10px;border-radius:6px;font:600 11px inherit;cursor:pointer;border:none;white-space:nowrap;transition:filter .15s}
-    .act-btn:hover{filter:brightness(.9)}
-    .act-free{background:#f3f4f6;color:#374151}
-    .act-prem{background:#fef9c3;color:#854d0e}
-    .act-powr{background:#ede9fe;color:#5b21b6}
-    .act-add{background:#dcfce7;color:#166534}
-    .act-rst{background:#dbeafe;color:#1d4ed8}
-    .act-dis{background:#fef2f2;color:#991b1b}
-    .act-enb{background:#f0fdf4;color:#166534}
-    .act-ovr{background:#fef3c7;color:#92400e}
-    .inf{color:#6b7280;font-size:12px}
-    .no-data{padding:40px;text-align:center;color:#9ca3af;font-size:14px}
-    /* ── Toast ── */
-    #toast{position:fixed;bottom:24px;right:24px;padding:12px 18px;border-radius:10px;font:600 13px inherit;display:none;z-index:999;box-shadow:0 4px 12px rgba(0,0,0,.15)}
-    #toast.ok{background:#1D9E75;color:#fff}
-    #toast.err{background:#b91c1c;color:#fff}
-    /* ── Modal ── */
-    #modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.4);align-items:center;justify-content:center;z-index:100}
-    #modal.open{display:flex}
-    .modal-card{background:#fff;border-radius:12px;padding:28px;width:340px;box-shadow:0 8px 30px rgba(0,0,0,.15)}
-    .modal-card h3{font-size:15px;margin-bottom:16px}
-    .modal-card input{width:100%;padding:9px 12px;border:1px solid #e5e7eb;border-radius:8px;font:13px inherit;margin-bottom:12px}
-    .modal-card input:focus{outline:none;border-color:#0F6E56}
-    .modal-btns{display:flex;gap:8px}
-    .modal-btns button{flex:1;padding:9px;border-radius:8px;font:600 13px inherit;cursor:pointer;border:none}
-    .btn-confirm{background:#1D9E75;color:#fff}
-    .btn-cancel-m{background:#f3f4f6;color:#374151}
-  </style>
-</head>
-<body>
+<!doctype html>
+<html lang="tr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>TagFlow Admin</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --bg: #090b10;
+        --panel: rgba(255, 255, 255, 0.07);
+        --line: rgba(255, 255, 255, 0.12);
+        --text: #f7f1e8;
+        --muted: #a9a39b;
+        --green: #1D9E75;
+      }
+      * { box-sizing: border-box; }
+      body {
+        margin: 0; min-height: 100vh;
+        background: radial-gradient(circle at top left, rgba(29, 158, 117, 0.15), transparent 34rem), var(--bg);
+        color: var(--text);
+        font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; padding: 40px 0; }
+      h1 { margin: 0 0 6px; font-size: 28px; }
+      .sub { color: var(--muted); margin: 0 0 28px; font-size: 13px; }
+      .sub a { color: var(--green); }
+      /* Login form */
+      #loginSection { max-width: 360px; }
+      .field { margin-bottom: 12px; }
+      .field label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 5px; }
+      .field input {
+        width: 100%; height: 42px; border-radius: 10px;
+        border: 1px solid var(--line); background: rgba(255,255,255,0.08);
+        color: var(--text); padding: 0 14px; font: inherit;
+      }
+      .btn-login {
+        width: 100%; height: 42px; border-radius: 10px; border: none;
+        background: var(--green); color: #fff; font: 600 14px inherit; cursor: pointer;
+        transition: background .15s;
+      }
+      .btn-login:hover:not(:disabled) { background: #0F6E56; }
+      .btn-login:disabled { background: #4b5563; cursor: not-allowed; }
+      /* Stats row */
+      .stats { display: flex; gap: 12px; margin-bottom: 20px; flex-wrap: wrap; }
+      .stat {
+        background: var(--panel); border: 1px solid var(--line);
+        border-radius: 10px; padding: 14px 20px; min-width: 120px;
+      }
+      .stat small { display: block; color: var(--muted); font-size: 11px; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .04em; }
+      .stat strong { font-size: 26px; }
+      /* Table */
+      .tbl-wrap { overflow-x: auto; border-radius: 12px; border: 1px solid var(--line); }
+      table { width: 100%; border-collapse: collapse; background: var(--panel); }
+      th, td { padding: 12px 14px; border-bottom: 1px solid var(--line); text-align: left; font-size: 13px; vertical-align: middle; }
+      th { color: var(--green); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; font-weight: 700; }
+      tr:last-child td { border-bottom: none; }
+      .badge {
+        display: inline-block; padding: 2px 8px; border-radius: 20px;
+        font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .03em;
+      }
+      .badge.free    { background: #374151; color: #9ca3af; }
+      .badge.premium { background: #451a03; color: #fbbf24; }
+      .badge.power   { background: #2e1065; color: #c4b5fd; }
+      /* Status lines */
+      .status { margin: 14px 0; font-size: 13px; min-height: 20px; color: var(--muted); }
+      .status.err { color: #f87171; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>🏷️ TagFlow Admin</h1>
+      <p class="sub">Owner dashboard &middot; <a href="https://acopesai.com">acopesai.com</a></p>
 
-<!-- ── Login ── -->
-<div id="loginWrap">
-  <div class="login-card">
-    <h1>TagFlow Admin</h1>
-    <p>Owner / Admin access only. Role verified server-side on every request.</p>
-    <input type="email"    id="loginEmail" placeholder="Admin email"  autocomplete="email"/>
-    <input type="password" id="loginPwd"   placeholder="Password"     autocomplete="current-password"/>
-    <button class="btn-green" id="loginBtn">Sign in</button>
-    <div id="loginErr"></div>
-  </div>
-</div>
+      <!-- ── Login form (shown when no valid token) ── -->
+      <div id="loginSection">
+        <div class="field">
+          <label>Email</label>
+          <input type="email" id="loginEmail" placeholder="ornek@email.com" autocomplete="email" />
+        </div>
+        <div class="field">
+          <label>Şifre</label>
+          <input type="password" id="loginPass" placeholder="Şifreniz" autocomplete="current-password" />
+        </div>
+        <button class="btn-login" id="loginBtn">Giriş Yap</button>
+        <div class="status" id="loginStatus"></div>
+      </div>
 
-<!-- ── Dashboard ── -->
-<div id="dashWrap">
-  <div class="topbar">
-    <h1>TagFlow Admin Dashboard</h1>
-    <div class="topbar-right">
-      <span id="adminEmail"></span>
-      <button class="btn-sm btn-logout" id="logoutBtn">Sign out</button>
-    </div>
-  </div>
-  <div class="stats-bar" id="statsBar"></div>
-  <div class="controls">
-    <input type="text" id="searchInput" placeholder="Search by email…" oninput="renderTable()"/>
-    <button class="btn-refresh" onclick="loadUsers()">Refresh</button>
-  </div>
-  <div class="table-wrap">
-    <table>
-      <thead>
-        <tr>
-          <th>Email</th><th>Plan</th><th>Role</th>
-          <th>Used Today</th><th>Eff. Limit</th><th>Override</th>
-          <th>Status</th><th>Joined</th><th>Actions</th>
-        </tr>
-      </thead>
-      <tbody id="usersBody"></tbody>
-    </table>
-  </div>
-</div>
+      <!-- ── Dashboard (shown after successful auth) ── -->
+      <div id="dashSection" style="display:none">
+        <div class="stats">
+          <div class="stat"><small>Toplam Kullanıcı</small><strong id="statTotal">--</strong></div>
+          <div class="stat"><small>Free</small><strong id="statFree">--</strong></div>
+          <div class="stat"><small>Premium</small><strong id="statPremium">--</strong></div>
+          <div class="stat"><small>Power Seller</small><strong id="statPower">--</strong></div>
+        </div>
+        <div class="tbl-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Email</th>
+                <th>Plan</th>
+                <th>Bugün Kullanım</th>
+                <th>Abonelik Durumu</th>
+                <th>Yenileme Tarihi</th>
+                <th>Kayıt Tarihi</th>
+              </tr>
+            </thead>
+            <tbody id="usersBody">
+              <tr><td colspan="6">Yükleniyor...</td></tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="status" id="dashStatus"></div>
+      </div>
+    </main>
 
-<!-- ── Override modal ── -->
-<div id="modal">
-  <div class="modal-card">
-    <h3 id="modalTitle">Set Daily Limit Override</h3>
-    <input type="number" id="modalInput" placeholder="Enter value (blank = clear override)" min="0"/>
-    <div class="modal-btns">
-      <button class="btn-confirm"   id="modalConfirm">Confirm</button>
-      <button class="btn-cancel-m"  onclick="closeModal()">Cancel</button>
-    </div>
-  </div>
-</div>
+    <script>
+      'use strict';
+      const API = 'https://acopes-ai-production.up.railway.app/api/tagflow';
 
-<div id="toast"></div>
+      const loginSection = document.getElementById('loginSection');
+      const dashSection  = document.getElementById('dashSection');
+      const loginStatus  = document.getElementById('loginStatus');
+      const dashStatus   = document.getElementById('dashStatus');
+      const loginBtn     = document.getElementById('loginBtn');
+      const usersBody    = document.getElementById('usersBody');
 
-<script>
-'use strict';
+      function esc(v) {
+        return String(v == null ? '' : v).replace(/[&<>"']/g, c =>
+          ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#039;' }[c]));
+      }
 
-const API    = 'https://acopes-ai-production.up.railway.app';
-let TOKEN    = '';
-let allUsers = [];
-let modalCb  = null;
+      function planBadge(plan) {
+        const p = (plan || 'free').toLowerCase();
+        return '<span class="badge ' + esc(p) + '">' + esc(p) + '</span>';
+      }
 
-// ── Bootstrap ────────────────────────────────────────────────────────────────
-(function init() {
-  TOKEN = localStorage.getItem('tfAdminToken') || '';
-  if (TOKEN) {
-    loadUsers().catch(() => { TOKEN = ''; localStorage.removeItem('tfAdminToken'); });
-  }
-  document.getElementById('loginBtn').addEventListener('click', doLogin);
-  ['loginEmail','loginPwd'].forEach(id => {
-    document.getElementById(id).addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
-  });
-  document.getElementById('logoutBtn').addEventListener('click', doLogout);
-  document.getElementById('modalConfirm').addEventListener('click', () => { if (modalCb) modalCb(); });
-  document.getElementById('modal').addEventListener('click', e => {
-    if (e.target === document.getElementById('modal')) closeModal();
-  });
-})();
+      function fmtDate(iso) {
+        if (!iso) return '--';
+        try { return new Date(iso).toLocaleDateString('tr-TR'); } catch { return String(iso); }
+      }
 
-// ── Auth ─────────────────────────────────────────────────────────────────────
-async function doLogin() {
-  const email = (document.getElementById('loginEmail').value || '').trim();
-  const pwd   = (document.getElementById('loginPwd').value   || '').trim();
-  if (!email || !pwd) { showLoginErr('Email and password required.'); return; }
-  const btn = document.getElementById('loginBtn');
-  btn.disabled = true; btn.textContent = 'Signing in…';
-  document.getElementById('loginErr').style.display = 'none';
-  try {
-    const res  = await apiFetch('/api/tagflow/auth/login', { email, password: pwd }, null, 'POST');
-    const data = await res.json();
-    if (!res.ok || !data.success) { showLoginErr(data.error || 'Login failed.'); return; }
-    if (!['owner','admin'].includes(data.role || '')) {
-      showLoginErr('Access denied — owner or admin role required.'); return;
-    }
-    TOKEN = data.token;
-    localStorage.setItem('tfAdminToken', TOKEN);
-    document.getElementById('adminEmail').textContent = data.email || email;
-    await loadUsers();
-  } catch (e) {
-    showLoginErr('Connection error: ' + e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = 'Sign in';
-  }
-}
+      function showDash(users) {
+        loginSection.style.display = 'none';
+        dashSection.style.display  = 'block';
 
-function doLogout() {
-  TOKEN = ''; localStorage.removeItem('tfAdminToken'); allUsers = [];
-  document.getElementById('dashWrap').style.display  = 'none';
-  document.getElementById('loginWrap').style.display = 'flex';
-}
+        document.getElementById('statTotal').textContent   = users.length;
+        document.getElementById('statFree').textContent    = users.filter(u => (u.plan || 'free') === 'free').length;
+        document.getElementById('statPremium').textContent = users.filter(u => u.plan === 'premium').length;
+        document.getElementById('statPower').textContent   = users.filter(u => u.plan === 'power').length;
 
-function showLoginErr(msg) {
-  const el = document.getElementById('loginErr');
-  el.textContent = msg; el.style.display = 'block';
-}
+        if (!users.length) {
+          usersBody.innerHTML = '<tr><td colspan="6">Henüz kayıtlı kullanıcı yok.</td></tr>';
+        } else {
+          usersBody.innerHTML = users.map(u =>
+            '<tr>' +
+            '<td>' + esc(u.email) + '</td>' +
+            '<td>' + planBadge(u.plan) + '</td>' +
+            '<td>' + esc(u.used_today != null ? u.used_today : 0) + '</td>' +
+            '<td>' + esc(u.subscription_status || 'active') + '</td>' +
+            '<td>' + fmtDate(u.subscription_renewal) + '</td>' +
+            '<td>' + fmtDate(u.created_at) + '</td>' +
+            '</tr>'
+          ).join('');
+        }
 
-// ── API helper ────────────────────────────────────────────────────────────────
-function apiFetch(path, body, token, method) {
-  const m = method || (body ? 'POST' : 'GET');
-  return fetch(API + path, {
-    method: m,
-    headers: {
-      'content-type': 'application/json',
-      ...(token || TOKEN ? { 'authorization': 'Bearer ' + (token || TOKEN) } : {})
-    },
-    ...(body ? { body: JSON.stringify(body) } : {})
-  });
-}
+        dashStatus.textContent = users.length + ' kullanıcı yüklendi · ' + new Date().toLocaleTimeString('tr-TR');
+      }
 
-// ── Load users ────────────────────────────────────────────────────────────────
-async function loadUsers() {
-  const res = await apiFetch('/api/tagflow/admin/users');
-  if (res.status === 401 || res.status === 403) {
-    doLogout(); showLoginErr('Session expired or access denied. Please sign in.'); throw new Error('auth');
-  }
-  const data = await res.json();
-  allUsers   = data.users || [];
-  document.getElementById('loginWrap').style.display = 'none';
-  document.getElementById('dashWrap').style.display  = 'block';
-  renderStats(); renderTable();
-}
+      async function loadUsers(token) {
+        const res  = await fetch(API + '/admin/users', {
+          headers: { 'Authorization': 'Bearer ' + token }
+        });
+        const data = await res.json().catch(() => ({}));
+        return { ok: res.ok, status: res.status, data };
+      }
 
-// ── Stats ─────────────────────────────────────────────────────────────────────
-function renderStats() {
-  const t   = allUsers.length;
-  const fr  = allUsers.filter(u => u.plan === 'free').length;
-  const pd  = allUsers.filter(u => u.plan !== 'free').length;
-  const ac  = allUsers.filter(u => (u.account_status || 'active') === 'active').length;
-  const ut  = allUsers.reduce((s, u) => s + (u.used_today || 0), 0);
-  document.getElementById('statsBar').innerHTML =
-    stat(t,'Total users') + stat(fr,'Free') + stat(pd,'Paid') + stat(ac,'Active') + stat(ut,'Analyses today');
-}
-function stat(v, l) { return `<div class="stat"><div class="stat-val">${v}</div><div class="stat-lbl">${l}</div></div>`; }
+      // ── Auto-auth from ?token= URL param ─────────────────────────────────────
+      (async function init() {
+        const urlToken = new URLSearchParams(location.search).get('token');
+        if (!urlToken) return; // no token → show login form
+        loginStatus.textContent = 'Oturum doğrulanıyor...';
+        loginStatus.className = 'status';
+        try {
+          const { ok, status, data } = await loadUsers(urlToken);
+          if (ok && data.success) {
+            showDash(data.users || []);
+            return;
+          }
+          // Invalid or unauthorised — strip token from URL, show login
+          history.replaceState({}, '', location.pathname);
+          if (status === 403) {
+            loginStatus.textContent = 'Bu hesabın admin yetkisi yok.';
+          } else {
+            loginStatus.textContent = 'Oturum süresi dolmuş. Lütfen tekrar giriş yapın.';
+          }
+          loginStatus.className = 'status err';
+        } catch (e) {
+          history.replaceState({}, '', location.pathname);
+          loginStatus.textContent = 'Bağlantı hatası: ' + e.message;
+          loginStatus.className = 'status err';
+        }
+      })();
 
-// ── Table ─────────────────────────────────────────────────────────────────────
-function renderTable() {
-  const q   = (document.getElementById('searchInput').value || '').toLowerCase();
-  const rows = allUsers.filter(u => !q || u.email.toLowerCase().includes(q));
-  const tb  = document.getElementById('usersBody');
-  if (!rows.length) { tb.innerHTML = '<tr><td colspan="9" class="no-data">No users found.</td></tr>'; return; }
-  tb.innerHTML = rows.map(u => {
-    const eff  = u.effective_daily_limit === -1 ? '&infin;' : (u.effective_daily_limit ?? '&mdash;');
-    const ovr  = u.daily_limit_override  != null ? u.daily_limit_override : '&mdash;';
-    const dt   = u.created_at ? new Date(u.created_at).toLocaleDateString('en-GB') : '&mdash;';
-    const st   = u.account_status || 'active';
-    const id   = esc(u.id);
-    return `<tr>
-      <td><strong>${esc(u.email)}</strong>${u.admin_note?'<br><span class="inf">'+esc(u.admin_note)+'</span>':''}</td>
-      <td><span class="badge badge-${esc(u.plan)}">${esc(u.plan.toUpperCase())}</span></td>
-      <td><span class="badge badge-${esc(u.role||'user')}">${esc((u.role||'user').toUpperCase())}</span></td>
-      <td>${u.used_today||0}</td>
-      <td>${eff}</td>
-      <td>${ovr}</td>
-      <td><span class="badge badge-${esc(st)}">${esc(st)}</span></td>
-      <td class="inf">${dt}</td>
-      <td><div class="actions">
-        <button class="act-btn act-free" onclick="setPlan('${id}','free')">Free</button>
-        <button class="act-btn act-prem" onclick="setPlan('${id}','premium')">Premium</button>
-        <button class="act-btn act-powr" onclick="setPlan('${id}','power')">Power</button>
-        <button class="act-btn act-add"  onclick="addCredit('${id}',50)">+50</button>
-        <button class="act-btn act-add"  onclick="addCredit('${id}',100)">+100</button>
-        <button class="act-btn act-ovr"  onclick="promptOverride('${id}','${esc(u.email)}',${u.daily_limit_override??'null'})">Limit</button>
-        <button class="act-btn act-rst"  onclick="resetUsage('${id}')">Reset</button>
-        ${st==='disabled'
-          ? `<button class="act-btn act-enb" onclick="toggleAccount('${id}','active')">Enable</button>`
-          : `<button class="act-btn act-dis" onclick="toggleAccount('${id}','disabled')">Disable</button>`}
-      </div></td>
-    </tr>`;
-  }).join('');
-}
+      // ── Fallback email / password login ──────────────────────────────────────
+      async function doLogin() {
+        const email    = (document.getElementById('loginEmail').value || '').trim();
+        const password = (document.getElementById('loginPass').value  || '').trim();
+        if (!email || !password) {
+          loginStatus.textContent = 'Email ve şifre gerekli.';
+          loginStatus.className = 'status err';
+          return;
+        }
 
-function esc(s) {
-  return String(s??'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
-}
+        loginBtn.disabled    = true;
+        loginBtn.textContent = 'Bekleniyor...';
+        loginStatus.textContent = '';
+        loginStatus.className = 'status';
 
-// ── Row actions ───────────────────────────────────────────────────────────────
-async function setPlan(id, plan)          { await doPatch(id, { plan }); }
-async function toggleAccount(id, status)  { await doPatch(id, { account_status: status }); }
+        try {
+          const loginRes  = await fetch(API + '/auth/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ email, password })
+          });
+          const loginData = await loginRes.json().catch(() => ({}));
 
-async function addCredit(id, amount) {
-  try {
-    const res  = await apiFetch(`/api/tagflow/admin/users/${id}/add-credit`, { amount }, TOKEN, 'POST');
-    const data = await res.json();
-    if (!res.ok || !data.success) { toast(data.error || 'Error', 'err'); return; }
-    toast(`+${amount} credits added (new limit: ${data.effective_daily_limit})`, 'ok');
-    await loadUsers();
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-}
+          if (!loginRes.ok || !loginData.success) {
+            loginStatus.textContent = loginData.error || 'Giriş başarısız.';
+            loginStatus.className = 'status err';
+            loginBtn.disabled = false;
+            loginBtn.textContent = 'Giriş Yap';
+            return;
+          }
 
-async function resetUsage(id) {
-  try {
-    const res  = await apiFetch(`/api/tagflow/admin/users/${id}/reset-usage`, {}, TOKEN, 'POST');
-    const data = await res.json();
-    if (!res.ok || !data.success) { toast(data.error || 'Error', 'err'); return; }
-    toast('Usage reset to 0', 'ok');
-    await loadUsers();
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-}
+          const { ok, status, data } = await loadUsers(loginData.token);
+          if (ok && data.success) {
+            showDash(data.users || []);
+          } else {
+            loginStatus.textContent = status === 403
+              ? 'Bu hesabın admin yetkisi yok.'
+              : (data.error || 'Admin erişimi başarısız.');
+            loginStatus.className = 'status err';
+            loginBtn.disabled = false;
+            loginBtn.textContent = 'Giriş Yap';
+          }
+        } catch (e) {
+          loginStatus.textContent = 'Bağlantı hatası: ' + e.message;
+          loginStatus.className = 'status err';
+          loginBtn.disabled = false;
+          loginBtn.textContent = 'Giriş Yap';
+        }
+      }
 
-function promptOverride(id, email, current) {
-  document.getElementById('modalTitle').textContent = 'Set Limit Override — ' + email;
-  document.getElementById('modalInput').value = current !== null ? current : '';
-  document.getElementById('modal').classList.add('open');
-  modalCb = async () => {
-    const val = document.getElementById('modalInput').value.trim();
-    const num = val === '' ? null : parseInt(val, 10);
-    if (val !== '' && (isNaN(num) || num < 0)) { toast('Enter a non-negative integer or leave blank to clear.', 'err'); return; }
-    closeModal();
-    await doPatch(id, { daily_limit_override: num });
-  };
-}
-
-function closeModal() { document.getElementById('modal').classList.remove('open'); modalCb = null; }
-
-async function doPatch(id, body) {
-  try {
-    const res  = await apiFetch(`/api/tagflow/admin/users/${id}`, body, TOKEN, 'PATCH');
-    const data = await res.json();
-    if (!res.ok || !data.success) { toast(data.error || 'Error', 'err'); return; }
-    toast('Updated', 'ok');
-    await loadUsers();
-  } catch (e) { toast('Error: ' + e.message, 'err'); }
-}
-
-// ── Toast ─────────────────────────────────────────────────────────────────────
-let _tt = null;
-function toast(msg, type) {
-  const el = document.getElementById('toast');
-  el.textContent = msg; el.className = type || 'ok'; el.style.display = 'block';
-  clearTimeout(_tt);
-  _tt = setTimeout(() => { el.style.display = 'none'; }, 3500);
-}
-</script>
-</body>
+      loginBtn.addEventListener('click', doLogin);
+      ['loginEmail', 'loginPass'].forEach(function(id) {
+        var el = document.getElementById(id);
+        if (el) el.addEventListener('keydown', function(e) { if (e.key === 'Enter') doLogin(); });
+      });
+    </script>
+  </body>
 </html>
