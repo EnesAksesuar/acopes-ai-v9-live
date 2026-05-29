@@ -1,0 +1,165 @@
+<!doctype html>
+<html lang="en">
+  <head>
+  <meta name="p:domain_verify" content="6ff818c2b515471278235d1f3e439ec4"/>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ACOPES AI | Etsy Seller Optimization Dashboard</title>
+    <meta name="description" content="ACOPES AI dashboard for draft-safe Etsy SEO, CTR, thumbnail, confidence scoring, and conversion intelligence workflows." />
+    <link rel="stylesheet" href="/styles.css" />
+  </head>
+  <body>
+    <main class="app-shell">
+      <section class="hero">
+        <div>
+          <strong class="app-brand-logo">ACOPES AI</strong>
+          <p class="eyebrow">ACOPES AI Beta</p>
+          <h1>AI Optimization Platform for Etsy Sellers</h1>
+          <p class="hero-copy">Conversion Intelligence for Etsy Sellers, with hero thumbnail CTR optimization, draft-safe AI review, and batch control.</p>
+        </div>
+        <div class="hero-actions">
+          <span class="draft-pill">Draft only</span>
+          <span id="usagePill" class="usage-pill">15 free remaining</span>
+          <span id="buildStamp" class="usage-pill">ACOPES AI V9 Live</span>
+          <button id="refreshListings" class="ghost">Refresh Etsy Listings</button>
+          <button id="optimizeSelected">Generate AI Optimization</button>
+          <button id="sendSelected">Send Selected</button>
+          <button id="sendBatch" class="ghost">Send Selected Batch</button>
+          <button id="queueBatch" class="ghost">Queue Selected Batch</button>
+          <button id="clearStaleQueue" class="ghost">Clear Stale Queue</button>
+          <button id="testMakeResponse" class="ghost">Test Make Response</button>
+        </div>
+      </section>
+
+      <section id="etsyConnectBanner" class="etsy-connect-banner" hidden></section>
+
+      <section class="kpi-strip">
+        <article><span>Total listings</span><strong id="heroCtrValue">--</strong></article>
+        <article><span>Optimized today</span><strong id="confidenceValue">--</strong></article>
+        <article><span>Credits remaining</span><strong id="heroThumbValue">--</strong></article>
+        <article><span>Estimated CTR uplift</span><strong id="queuedCount">--</strong></article>
+        <article><span>Estimated revenue impact</span><strong id="approvedCount">--</strong></article>
+      </section>
+
+      <section class="dashboard-grid">
+        <div class="main-stack">
+          <section class="panel agency-workspace">
+            <div class="section-head"><div><p class="eyebrow">Workspace</p><h2>Agency Mode Foundation</h2></div></div>
+            <div class="workspace-row">
+              <select id="workspaceSelector">
+                <option>My Shop</option>
+                <option>Client Workspace</option>
+              </select>
+              <div class="agency-stats">
+                <span>Clients <strong>3</strong></span>
+                <span>Listings managed <strong>128</strong></span>
+                <span>Credits used <strong>42</strong></span>
+                <span>Queued jobs <strong>7</strong></span>
+              </div>
+            </div>
+          </section>
+          <section class="panel onboarding" id="onboardingPanel">
+            <div class="section-head"><div><p class="eyebrow">ACOPES AI Onboarding</p><h2>Start your beta workspace</h2></div></div>
+            <form id="onboardingForm">
+              <input name="store_name" placeholder="Etsy shop name" />
+              <input name="email" type="email" placeholder="Work email" />
+              <button>Continue to dashboard</button>
+            </form>
+          </section>
+          <section class="panel">
+            <div class="section-head"><div><p class="eyebrow">Products</p><h2>CTR Optimization Queue</h2></div></div>
+            <div id="products" class="products"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><div><p class="eyebrow">Before / After</p><h2>Live Optimization Cards</h2></div></div>
+            <div id="optimizations" class="optimizations"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><div><p class="eyebrow">Market Intelligence</p><h2>Competitor Intelligence</h2></div></div>
+            <form id="competitorForm" class="competitor-form">
+              <input name="query" placeholder="Paste Etsy listing URL or keyword" />
+              <button type="submit">Analyze Market</button>
+            </form>
+            <div id="competitorIntelligence" class="competitor-intelligence"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><div><p class="eyebrow">Trends</p><h2>Trending Buyer Intent</h2></div></div>
+            <div id="trendPanel" class="trend-panel"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head"><div><p class="eyebrow">Bulk Engine</p><h2>Bulk Optimization</h2></div></div>
+            <div id="bulkEngine" class="bulk-engine"></div>
+          </section>
+        </div>
+        <aside class="side-stack">
+          <section class="panel etsy-auth-card">
+            <div class="section-head compact"><div><p class="eyebrow">Etsy Live Sync</p><h2>Auth Status</h2></div></div>
+            <div id="etsyAuthStatus" class="etsy-auth-status"></div>
+            <div class="etsy-auth-actions">
+              <button id="connectEtsy" class="ghost">Connect Etsy Shop</button>
+              <button id="syncEtsyListings">Refresh Sync</button>
+              <button id="disconnectEtsy" class="ghost">Reconnect Etsy</button>
+            </div>
+          </section>
+          <section class="panel sticky-panel">
+            <div class="section-head compact"><div><p class="eyebrow">Live Status</p><h2>Draft Control</h2></div></div>
+            <div id="status" class="status idle">Idle</div>
+            <dl id="scoreDashboard" class="scores"></dl>
+          </section>
+          <section class="panel">
+            <div class="section-head compact"><div><p class="eyebrow">Account</p><h2>Credits & Plan</h2></div></div>
+            <div id="usagePanel" class="usage-panel"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head compact"><div><p class="eyebrow">Batch</p><h2>Processing</h2></div></div>
+            <div id="batchDashboard" class="batch-dashboard"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head compact"><div><p class="eyebrow">History</p><h2>AI Optimization History</h2></div></div>
+            <div id="historySidebar" class="history-sidebar"></div>
+          </section>
+          <section class="panel competitor-intel">
+            <div class="section-head compact"><div><p class="eyebrow">AI Action Center</p><h2>Detected Issues</h2></div></div>
+            <div id="actionCenter" class="action-center"></div>
+          </section>
+          <section class="panel">
+            <div class="section-head compact"><div><p class="eyebrow">Activity</p><h2>Live Activity Feed</h2></div></div>
+            <div id="activityFeed" class="activity-feed"></div>
+          </section>
+          <section class="panel competitor-intel">
+            <div class="section-head compact"><div><p class="eyebrow">V8 Intelligence</p><h2>Upgrade Intelligence</h2></div></div>
+            <p>Advanced competitor and bulk systems are now staged inside the beta dashboard.</p>
+            <div class="locked-feature-list">
+              <span>Advanced competitor intelligence</span>
+              <span>Bulk optimization signals</span>
+              <span>Market pressure tracking</span>
+            </div>
+          </section>
+        </aside>
+      </section>
+
+      <section class="lower-grid">
+        <section class="panel"><div class="section-head"><div><p class="eyebrow">Timeline</p><h2>Optimization Timeline</h2></div></div><div id="timeline" class="timeline"></div></section>
+        <section class="panel"><div class="section-head"><div><p class="eyebrow">Queue</p><h2>Batch Queue</h2></div></div><div id="queue" class="queue"></div></section>
+        <section class="panel"><div class="section-head"><div><p class="eyebrow">Logs</p><h2>Automation Logs</h2></div></div><div id="logs" class="logs"></div></section>
+      </section>
+    </main>
+    <div id="toastStack" class="toast-stack" aria-live="polite"></div>
+    <div id="thumbnailModal" class="modal" hidden><div class="modal-backdrop" data-close-modal></div><div class="modal-card"><button class="modal-close" data-close-modal>Close</button><img id="modalImage" alt="" /></div></div>
+    <div id="upgradeModal" class="modal" hidden>
+      <div class="modal-backdrop" data-close-upgrade></div>
+      <div class="modal-card upgrade-card">
+        <button class="modal-close" data-close-upgrade>Close</button>
+        <p class="eyebrow">Upgrade to Pro</p>
+        <h2>You used all available credits</h2>
+        <p>Keep optimizing Etsy listings with ACOPES AI batch processing, history, and priority hero thumbnail testing.</p>
+        <div class="upgrade-actions">
+          <button data-upgrade-plan="pro">Upgrade to Pro - 100 credits</button>
+          <button class="ghost" data-upgrade-plan="agency">Agency - 500 credits</button>
+        </div>
+      </div>
+    </div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
+
