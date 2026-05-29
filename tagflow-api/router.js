@@ -257,15 +257,12 @@ router.post('/auth/login', (req, res) => {
 // ─────────────────────────────────────────────────────────────────────────────
 router.get('/user/me', requireAuth, (req, res) => {
   try {
-    let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
-    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
-    user = freshUser(user);
-    // ── Hard owner fallback — no role column / migration dependency ───────────
-    if (String(user.email || '').toLowerCase() === 'enesaksesuar1@gmail.com') {
+    // ── Hard owner check on JWT email — fires before any DB query ─────────────
+    if (String(req.tf.email || '').toLowerCase() === 'enesaksesuar1@gmail.com') {
       return res.json({
         success:              true,
-        email:                user.email,
-        plan:                 user.plan || 'free',
+        email:                req.tf.email,
+        plan:                 'free',
         plan_name:            'Owner',
         plan_price:           '$0',
         role:                 'owner',
@@ -275,11 +272,15 @@ router.get('/user/me', requireAuth, (req, res) => {
         daily_limit_override: null,
         remaining:            null,
         unlimited:            true,
-        subscription_status:  user.subscription_status  || null,
-        subscription_renewal: user.subscription_renewal || null,
-        billing_provider:     user.billing_provider     || null
+        owner_debug:          'OWNER_PATCH_ACTIVE',
+        subscription_status:  null,
+        subscription_renewal: null,
+        billing_provider:     null
       });
     }
+    let user = db().prepare('SELECT * FROM tagflow_users WHERE id=?').get(req.tf.userId);
+    if (!user) return res.status(404).json({ success: false, error: 'Kullanıcı bulunamadı.' });
+    user = freshUser(user);
     // Force owner role for owner email — safety net for any migration edge-case
     if (user.email === OWNER_EMAIL && (user.role || 'user') !== 'owner') {
       db().prepare("UPDATE tagflow_users SET role='owner' WHERE id=?").run(user.id);
