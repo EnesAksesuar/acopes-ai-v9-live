@@ -27,6 +27,14 @@
   const btnUpgradePremium= document.getElementById('btnUpgradePremium');
   const btnUpgradePower  = document.getElementById('btnUpgradePower');
   const bestPlanEl       = document.getElementById('bestPlan');
+  // ── Billing card elements ──────────────────────────────────────────────────
+  const billingCardEl      = document.getElementById('billingCard');
+  const billingPlanBadgeEl = document.getElementById('billingPlanBadge');
+  const billingUpgradeSect = document.getElementById('billingUpgradeSection');
+  const billingBtnPremium  = document.getElementById('billingBtnPremium');
+  const billingBtnPower    = document.getElementById('billingBtnPower');
+  const billingBestPlanEl  = document.getElementById('billingBestPlan');
+  const billingToastEl     = document.getElementById('billingToast');
 
   // ── State ─────────────────────────────────────────────────────────────────
   let isSignup = false;
@@ -40,6 +48,17 @@
     toastEl.style.display = 'block';
     clearTimeout(_t);
     if (type !== 'err') _t = setTimeout(() => { toastEl.style.display = 'none'; }, 4000);
+  }
+
+  // ── Billing toast (shown inside billing card) ─────────────────────────────
+  let _bt = null;
+  function billingToast(msg, type) {
+    if (!billingToastEl) return;
+    billingToastEl.textContent = msg;
+    billingToastEl.className = 'toast ' + (type || 'ok');
+    billingToastEl.style.display = 'block';
+    clearTimeout(_bt);
+    if (type !== 'err') _bt = setTimeout(() => { billingToastEl.style.display = 'none'; }, 4000);
   }
 
   // ── Plan display names ────────────────────────────────────────────────────
@@ -83,7 +102,7 @@
       }
     }
 
-    // ── Upgrade buttons ─────────────────────────────────────────────────────
+    // ── Upgrade buttons (auth card, kept for compatibility) ─────────────────
     if (upgradeSectionEl && btnUpgradePremium && btnUpgradePower && bestPlanEl) {
       if (plan === 'free') {
         upgradeSectionEl.style.display = 'flex';
@@ -101,6 +120,32 @@
         bestPlanEl.style.display       = 'block';
       }
     }
+
+    // ── Billing card (separate card below account card) ──────────────────────
+    if (billingCardEl) {
+      billingCardEl.style.display = 'block';
+      if (billingPlanBadgeEl) {
+        billingPlanBadgeEl.textContent = PLAN_NAMES[plan] || plan.toUpperCase();
+        billingPlanBadgeEl.className   = 'plan-badge ' + plan;
+      }
+      if (billingUpgradeSect && billingBtnPremium && billingBtnPower && billingBestPlanEl) {
+        if (plan === 'free') {
+          billingUpgradeSect.style.display  = 'flex';
+          billingBtnPremium.style.display   = '';
+          billingBtnPower.style.display     = '';
+          billingBestPlanEl.style.display   = 'none';
+        } else if (plan === 'premium') {
+          billingUpgradeSect.style.display  = 'flex';
+          billingBtnPremium.style.display   = 'none';
+          billingBtnPower.style.display     = '';
+          billingBestPlanEl.style.display   = 'none';
+        } else {
+          // power — already on best plan
+          billingUpgradeSect.style.display  = 'none';
+          billingBestPlanEl.style.display   = 'block';
+        }
+      }
+    }
   }
 
   // ── Show logged-out UI ────────────────────────────────────────────────────
@@ -108,6 +153,7 @@
     loginView.style.display    = 'block';
     loggedInView.style.display = 'none';
     cardTitle.textContent      = isSignup ? 'Ücretsiz Kayıt' : 'Giriş Yap';
+    if (billingCardEl) billingCardEl.style.display = 'none';
   }
 
   // ── API call helper (safe JSON parsing) ──────────────────────────────────
@@ -201,32 +247,34 @@
   });
 
   // ── Upgrade handlers ──────────────────────────────────────────────────────
-  async function handleUpgrade(plan) {
+  async function handleUpgrade(plan, btn) {
     const s = await chrome.storage.local.get('tagflowToken');
-    if (!s.tagflowToken) { toast('Önce giriş yapın.', 'err'); return; }
+    if (!s.tagflowToken) { billingToast('Önce giriş yapın.', 'err'); return; }
 
-    const btn = plan === 'power' ? btnUpgradePower : btnUpgradePremium;
     const origText = btn ? btn.innerHTML : '';
-    if (btn) { btn.disabled = true; btn.innerHTML = '<span>Bekleniyor...</span>'; }
+    if (btn) { btn.disabled = true; btn.innerHTML = '<span>Güvenli ödeme açılıyor...</span>'; }
 
     try {
       const { ok, data } = await api('/api/tagflow/billing/create-checkout', { plan }, s.tagflowToken);
       if (ok && data.success && data.checkout_url) {
-        // Open checkout in a new tab (placeholder or live Paddle URL)
-        chrome.tabs.create({ url: data.checkout_url });
-        if (data.placeholder) toast('ℹ️ Ödeme altyapısı yapılandırılmadı. Yakında aktif olacak.', 'ok');
+        window.open(data.checkout_url, '_blank');
+        if (data.placeholder) billingToast('ℹ️ Ödeme altyapısı yapılandırılmadı. Yakında aktif olacak.', 'ok');
       } else {
-        toast('❌ ' + (data.error || 'Checkout oluşturulamadı.'), 'err');
+        billingToast('❌ ' + (data.error || 'Checkout oluşturulamadı.'), 'err');
       }
     } catch (e) {
-      toast('❌ Bağlantı hatası: ' + e.message, 'err');
+      billingToast('❌ Bağlantı hatası: ' + e.message, 'err');
     }
 
     if (btn) { btn.disabled = false; btn.innerHTML = origText; }
   }
 
-  if (btnUpgradePremium) btnUpgradePremium.addEventListener('click', () => handleUpgrade('premium'));
-  if (btnUpgradePower)   btnUpgradePower.addEventListener('click',   () => handleUpgrade('power'));
+  // Auth-card buttons (existing, kept for compatibility)
+  if (btnUpgradePremium) btnUpgradePremium.addEventListener('click', () => handleUpgrade('premium', btnUpgradePremium));
+  if (btnUpgradePower)   btnUpgradePower.addEventListener('click',   () => handleUpgrade('power',   btnUpgradePower));
+  // Billing-card buttons (new, primary)
+  if (billingBtnPremium) billingBtnPremium.addEventListener('click', () => handleUpgrade('premium', billingBtnPremium));
+  if (billingBtnPower)   billingBtnPower.addEventListener('click',   () => handleUpgrade('power',   billingBtnPower));
 
   // ── Enter key support ─────────────────────────────────────────────────────
   [emailEl, passwordEl].forEach(el => {
